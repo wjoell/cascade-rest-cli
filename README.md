@@ -1,37 +1,51 @@
 # Cascade REST CLI
 
-A command-line interface for interacting with Cascade Server REST API. This CLI provides an efficient way to perform common operations like searching assets, reading metadata, updating fields, and publishing content.
+A command-line interface for interacting with Cascade Server REST API. This tool provides operations for searching assets, reading metadata, updating fields, and publishing content.
+
+## Important Notices
+
+**USE AT YOUR OWN RISK**: This is an orchestration tool under active development. Features and functionality may change without notice. The codebase has not been extensively battle-tested in production environments.
+
+**CAUTION**: This tool can perform batch operations that may have destructive outcomes that are difficult or impossible to reverse. Always:
+- Test thoroughly in a test environment before using in production
+- Use the `--dry-run` flag to preview operations
+- Maintain backups of your content
+- Verify operations on small datasets before scaling up
+
+**COMPATIBILITY**: This project is intended for use with Cascade CMS on-premises instances. Compatibility with Cascade Cloud is not guaranteed and your mileage may vary.
+
+**DEVELOPMENT STATUS**: This is a comprehensive orchestration tool that is actively being developed. Code quality, test coverage, and feature stability may vary across different modules.
 
 ## Features
 
 ### Core Operations
 
--   🔐 **Authentication**: Support for API key and username/password authentication
--   🔍 **Search**: Search for assets across sites
--   📖 **Read**: Read individual asset details and metadata
--   ✏️ **Update**: Update metadata fields on assets
--   📤 **Publish**: Publish or unpublish assets
--   📁 **Browse**: List folder contents
--   📊 **Reports**: View operation summaries
--   🎯 **Interactive Mode**: Command-line interface for interactive use
+-   **Authentication**: Support for API key and username/password authentication
+-   **Search**: Search for assets across sites
+-   **Read**: Read individual asset details and metadata
+-   **Update**: Update metadata fields on assets
+-   **Publish**: Publish or unpublish assets
+-   **Browse**: List folder contents
+-   **Reports**: View operation summaries
+-   **Interactive Mode**: Command-line interface for interactive use
 
 ### Batch Operations
 
--   🔄 **Batch Operations**: Bulk update assets by type and path patterns
--   🏷️ **Tag Management**: Set tags across multiple assets
--   🚀 **Dry Run Mode**: Preview changes before applying them
+-   **Batch Operations**: Bulk update assets by type and path patterns
+-   **Tag Management**: Set tags across multiple assets
+-   **Dry Run Mode**: Preview changes before applying them
 
 ### Advanced Features
 
--   📊 **Comprehensive Logging**: Structured logging with configurable levels and file rotation
--   📁 **CSV Import/Export**: Batch operations from spreadsheet data with templates
--   🔍 **Advanced Filtering**: Sophisticated search criteria with multiple operators
--   ↩️ **Rollback Operations**: Undo batch operations with automatic state tracking
--   ⚡ **Performance Optimization**: Parallel processing and connection pooling
--   📈 **Performance Monitoring**: Real-time metrics and operation statistics
--   🧹 **Automated Cleanup**: Remove old rollback records and expired cache entries
--   🔒 **Secure Secret Management**: Encrypted credential storage with keyring support
--   ⏰ **Scheduled Jobs**: Automated recurring operations with background scheduling
+-   **Comprehensive Logging**: Structured logging with configurable levels and file rotation
+-   **CSV Import/Export**: Batch operations from spreadsheet data with templates
+-   **Advanced Filtering**: Search criteria with multiple operators
+-   **Rollback Operations**: Attempt to undo batch operations with automatic state tracking
+-   **Performance Optimization**: Parallel processing and connection pooling
+-   **Performance Monitoring**: Basic metrics and operation statistics
+-   **Automated Cleanup**: Remove old rollback records and expired cache entries
+-   **Secure Secret Management**: Encrypted credential storage with keyring support
+-   **Scheduled Jobs**: Automated recurring operations with background scheduling
 
 ## Installation
 
@@ -445,12 +459,12 @@ python cli.py search --type page --path-filter "2024-2025"
 
 **Security Features:**
 
--   🔒 **Encrypted Storage**: Local credentials encrypted with AES-256
--   🗝️ **Keyring Integration**: Uses system keyring (macOS Keychain, Windows Credential Manager, etc.)
--   🔐 **Environment Variables**: Secure credential loading from environment
--   🔑 **1Password Integration**: Team credential management with 1Password CLI
--   📁 **Restricted Permissions**: Credential files have restricted access (600 permissions)
--   🧹 **Automatic Cleanup**: Secure deletion of stored credentials
+-   **Encrypted Storage**: Local credentials encrypted with AES-256
+-   **Keyring Integration**: Uses system keyring (macOS Keychain, Windows Credential Manager, etc.)
+-   **Environment Variables**: Credential loading from environment variables
+-   **1Password Integration**: Team credential management with 1Password CLI
+-   **Restricted Permissions**: Credential files have restricted access (600 permissions)
+-   **Automatic Cleanup**: Secure deletion of stored credentials
 
 ### Scheduled Jobs
 
@@ -603,12 +617,15 @@ The CLI provides clear error messages and handles common issues:
 -   Invalid asset IDs
 -   Permission denied errors
 
-## Tips
+## Best Practices
 
-1. **Use Interactive Mode**: For regular work, interactive mode is more convenient
-2. **Check Reports**: Use `reports` command to see operation summaries
-3. **Test First**: Always test commands on a single asset before batch operations
-4. **Backup**: Consider backing up important assets before bulk updates
+1. **Test Environment First**: Always test operations in a non-production environment
+2. **Use Dry Run**: Use the `--dry-run` flag to preview changes before executing
+3. **Start Small**: Test commands on a single asset before running batch operations
+4. **Maintain Backups**: Back up important assets before performing bulk updates
+5. **Review Changes**: Use `reports` command to review operation summaries
+6. **Document Operations**: Keep records of batch operations for audit purposes
+7. **Understand Rollback Limitations**: Rollback operations may not always succeed or fully restore previous state
 
 ## Troubleshooting
 
@@ -618,23 +635,53 @@ The CLI provides clear error messages and handles common issues:
 2. **Authentication failed**: Check your API key or credentials
 3. **Asset not found**: Verify the asset type and ID
 4. **Permission denied**: Check your user permissions in Cascade
+5. **Unexpected behavior**: Test in a controlled environment before production use
+6. **Rollback failures**: Not all operations can be successfully rolled back
 
 ### Getting Help
 
 -   Use `python cli.py --help` for general help
 -   Use `python cli.py <command> --help` for command-specific help
 -   In interactive mode, type `help` for available commands
+-   Review the test suite in `tests/` for usage examples
 
 ## Development
 
-The CLI is built using:
+This tool is built using:
 
 -   **Click**: Command-line interface creation kit
--   **cascade_rest**: Your existing Cascade REST API library
+-   **Requests**: HTTP library for API communication
+-   **Python 3.12+**: Minimum Python version
 
-To extend the CLI, you can:
+### Contributing
 
-1. Add new commands to `cli.py`
-2. Modify the `CascadeCLI` class for additional functionality
-3. Update configuration in `config.py`
-4. Add new example workflows in `examples.py`
+This is an active development project. When contributing:
+
+1. Test thoroughly in a test environment
+2. Add unit tests for new functionality (see `tests/` directory)
+3. Follow existing code patterns and conventions
+4. Document new features and commands
+5. Consider edge cases and error handling
+
+### Testing
+
+See `tests/README.md` for comprehensive testing documentation. The test suite includes:
+
+-   CRUD operation tests
+-   Advanced filtering tests
+-   CSV import/export tests
+-   Tag operation tests
+-   Job scheduler tests
+
+Run tests with:
+```bash
+pytest tests/ -v
+```
+
+## License
+
+This project is provided as-is without warranty. Use at your own risk.
+
+## Disclaimer
+
+This tool can modify and delete content in your Cascade CMS instance. The authors are not responsible for any data loss, corruption, or other issues that may arise from its use. Always test in a non-production environment and maintain proper backups.
