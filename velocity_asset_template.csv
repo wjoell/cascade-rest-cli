@@ -1,0 +1,5 @@
+id,name,path,type,site,metadata_field_1,metadata_field_2,tag_1,tag_2
+# Replace these with your actual asset IDs from Velocity
+# Example: abc123def456,Home Page,/home,page,main_site,new_metadata_value,2024,priority,updated
+# Example: def456ghi789,About Us,/about,page,main_site,new_metadata_value,2024,company,info
+# Example: ghi789jkl012,Contact,/contact,page,main_site,new_metadata_value,2024,contact,form

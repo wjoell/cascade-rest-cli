@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.venv/
+cascade-rest-env/
+
+# IDE
+/.idea/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+logs/
+*.log
+temp/
+tmp/
+
+# Session and cache files
+sessions/
+*.session
+cache/
+
+# CSV backups and temporary files
+csv_backups/
+rollbacks/
+*.csv.bak
+
+# Sensitive data files
+json/
+sql/
+
+# Jupyter/Notebook files
+/.ipynb_checkpoints/
+__marimo__/
+*.mo
+/notebooks/
+
+# 1Password CLI temporary files
+.op/
+
+# archived files
+_archived/

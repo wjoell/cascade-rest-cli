@@ -1,0 +1,2 @@
+id,name,path,type,site,metadata_field_1,metadata_field_2,tag_1,tag_2
+example_asset_id,Example Asset Name,/path/to/asset,asset,example_site,example_metadata_value,another_metadata_value,example_tag_value,another_tag_value
