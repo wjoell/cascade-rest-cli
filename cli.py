@@ -703,9 +703,49 @@ def reports():
 
 
 @main.command()
-def interactive():
+@click.option(
+    "--1password",
+    "onepassword_env",
+    type=click.Choice(["test", "production"]),
+    help="Use 1Password credentials for test or production environment",
+)
+def interactive(onepassword_env: Optional[str]):
     """Start interactive mode"""
-    if not cli.connected:
+    
+    # If 1Password environment specified, fetch credentials
+    if onepassword_env:
+        env_config = {
+            "test": {
+                "vault": "Cascade REST Development Test",
+                "item": "Cascade Rest API Test"
+            },
+            "production": {
+                "vault": "Cascade REST Development Production",
+                "item": "Cascade Rest API Production"
+            }
+        }
+        
+        vault_name = env_config[onepassword_env]["vault"]
+        item_name = env_config[onepassword_env]["item"]
+        
+        click.echo(f"🔑 Fetching {onepassword_env} credentials from 1Password...")
+        connection_data = secrets_manager.get_from_1password(vault_name, item_name)
+        
+        if not connection_data:
+            click.echo(f"❌ Could not fetch credentials from 1Password")
+            click.echo(f"💡 Vault: {vault_name}")
+            click.echo(f"💡 Item: {item_name}")
+            return
+        
+        cli.setup_connection(
+            connection_data["cms_path"],
+            connection_data.get("api_key"),
+            connection_data.get("username"),
+            connection_data.get("password"),
+        )
+        click.echo(f"✅ Connected to {onepassword_env} ({connection_data['cms_path']})")
+    
+    elif not cli.connected:
         click.echo("Setting up connection first...")
         if not cli.setup_connection(cli.cms_path or "https://cms.example.edu:8443"):
             click.echo("❌ Cannot start interactive mode without connection")
@@ -1570,14 +1610,23 @@ def setup_with_1password(
     required=True,
     help="Environment to connect to",
 )
-@click.option(
-    "--vault-prefix", default="Cascade", help="Prefix for 1Password vault names"
-)
-def quick_connect(env: str, vault_prefix: str):
+def quick_connect(env: str):
     """Quickly connect to test or production environment using 1Password"""
 
-    vault_name = f"{vault_prefix} {env.title()}"
-    item_name = f"{env.title()} Service Account"
+    # Map environment to actual vault and item names
+    env_config = {
+        "test": {
+            "vault": "Cascade REST Development Test",
+            "item": "Cascade Rest API Test"
+        },
+        "production": {
+            "vault": "Cascade REST Development Production",
+            "item": "Cascade Rest API Production"
+        }
+    }
+
+    vault_name = env_config[env]["vault"]
+    item_name = env_config[env]["item"]
 
     click.echo(f"🚀 Quick connecting to {env} environment...")
     click.echo(f"   Vault: {vault_name}")
@@ -1963,6 +2012,223 @@ def show_job_templates():
     click.echo(f"   • 'every 30 minutes' - Run every 30 minutes")
     click.echo(f"   • 'every 2 hours' - Run every 2 hours")
     click.echo(f"   • 'weekly on Monday at 06:00' - Run weekly on Monday at 6 AM")
+
+
+# =============================================================================
+# MIGRATION COMMANDS
+# =============================================================================
+
+
+@main.command("migrate-scan")
+def migrate_scan():
+    """Scan source directory and preview migration scope"""
+    from migration.scanner import get_migration_summary, scan_folder_structure, scan_xml_files
+    
+    click.echo("🔍 Scanning source directory...")
+    
+    folder_count, page_count = get_migration_summary()
+    
+    click.echo(f"\n📊 Migration Scope:")
+    click.echo(f"  Folders: {folder_count}")
+    click.echo(f"  Pages: {page_count}")
+    
+    if click.confirm("\nShow first 20 folders?", default=False):
+        folders = scan_folder_structure()
+        click.echo("\n📁 Folders:")
+        for i, folder in enumerate(folders[:20], 1):
+            click.echo(f"  {i}. {folder}")
+        if len(folders) > 20:
+            click.echo(f"  ... and {len(folders) - 20} more")
+    
+    if click.confirm("\nShow first 20 pages?", default=False):
+        pages = scan_xml_files()
+        click.echo("\n📄 Pages:")
+        for i, page in enumerate(pages[:20], 1):
+            click.echo(f"  {i}. {page['relative_path']} → {page['page_name']}")
+        if len(pages) > 20:
+            click.echo(f"  ... and {len(pages) - 20} more")
+
+
+@main.command("migrate-folders")
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without creating")
+def migrate_folders(dry_run: bool):
+    """Create folder structure for migration (Asset Factory pattern)"""
+    from migration.folder_creator import create_folders
+    
+    if not dry_run:
+        if not cli.connected:
+            click.echo("❌ Not connected. Use setup first.")
+            return
+        
+        if not click.confirm("\n⚠️  This will create folders in Cascade. Continue?"):
+            click.echo("Cancelled.")
+            return
+    
+    result = create_folders(
+        auth=cli.auth if not dry_run else {},
+        cms_path=cli.cms_path if not dry_run else None,
+        dry_run=dry_run
+    )
+    
+    if not dry_run and not result['success']:
+        click.echo(f"\n⚠️  Some folders failed to create. Check logs.")
+
+
+@main.command("migrate-pages")
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without creating")
+def migrate_pages(dry_run: bool):
+    """Create page shells for migration (Asset Factory pattern - no content yet)"""
+    from migration.page_creator import create_pages
+    
+    if not dry_run:
+        if not cli.connected:
+            click.echo("❌ Not connected. Use setup first.")
+            return
+        
+        if not click.confirm("\n⚠️  This will create pages in Cascade. Continue?"):
+            click.echo("Cancelled.")
+            return
+    
+    result = create_pages(
+        auth=cli.auth if not dry_run else {},
+        cms_path=cli.cms_path if not dry_run else None,
+        dry_run=dry_run
+    )
+    
+    if not dry_run and not result['success']:
+        click.echo(f"\n⚠️  Some pages failed to create. Check logs.")
+
+
+@main.command("migrate-run")
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
+@click.option("--folders-only", is_flag=True, help="Create folders only")
+@click.option("--pages-only", is_flag=True, help="Create pages only (folders must exist)")
+@click.option("--cms-path", help="CMS URL (e.g., https://cms.example.edu:8443)")
+@click.option("--api-key", help="API key for authentication")
+def migrate_run(dry_run: bool, folders_only: bool, pages_only: bool, cms_path: str, api_key: str):
+    """Run the full migration: folders + pages"""
+    from migration.orchestrator import run_migration
+    
+    # Only require connection for non-dry-run
+    if not dry_run:
+        # Use provided credentials or check for existing connection
+        if cms_path and api_key:
+            auth = {"apiKey": api_key}
+            click.echo(f"✅ Using provided credentials for {cms_path}")
+        elif cli.connected:
+            cms_path = cli.cms_path
+            auth = cli.auth
+        else:
+            click.echo("❌ Not connected. Either:")
+            click.echo("   1. Use --cms-path and --api-key options, OR")
+            click.echo("   2. Run 'python cli.py setup' first")
+            return
+        
+        if not click.confirm("\n⚠️  This will create folders and pages in Cascade. Continue?"):
+            click.echo("Cancelled.")
+            return
+    else:
+        click.echo("\n💡 Running in DRY-RUN mode (no changes will be made)\n")
+        cms_path = None
+        auth = {}
+    
+    result = run_migration(
+        auth=auth,
+        cms_path=cms_path,
+        dry_run=dry_run,
+        create_folders_only=folders_only,
+        create_pages_only=pages_only
+    )
+    
+    if not dry_run:
+        if result.get('folders') and not result['folders']['success']:
+            click.echo(f"\n⚠️  Folder creation encountered errors.")
+        if result.get('pages') and not result['pages']['success']:
+            click.echo(f"\n⚠️  Page creation encountered errors.")
+
+
+@main.command("migrate-db-stats")
+def migrate_db_stats():
+    """Show migration database statistics"""
+    from migration.database import get_db
+    
+    db = get_db()
+    stats = db.get_stats()
+    
+    click.echo("\n📊 Migration Database Statistics")
+    click.echo("=" * 40)
+    click.echo(f"Database: {db.db_path}")
+    click.echo(f"\nAssets tracked:")
+    click.echo(f"  Folders: {stats['folders']}")
+    click.echo(f"  Pages:   {stats['pages']}")
+    click.echo(f"  Total:   {stats['total']}")
+    click.echo()
+
+
+@main.command("migrate-db-list")
+@click.option("--folders", is_flag=True, help="List folders only")
+@click.option("--pages", is_flag=True, help="List pages only")
+@click.option("--path", help="Filter by path prefix")
+@click.option("--limit", default=50, help="Limit results (default: 50)")
+def migrate_db_list(folders: bool, pages: bool, path: str, limit: int):
+    """List assets in the migration database"""
+    from migration.database import get_db
+    
+    db = get_db()
+    
+    # Default to showing both if neither specified
+    show_folders = folders or not pages
+    show_pages = pages or not folders
+    
+    if show_folders:
+        click.echo("\n📁 Folders:")
+        click.echo("=" * 80)
+        
+        if path:
+            folder_list = db.get_folders_in_path(path)[:limit]
+        else:
+            folder_list = db.get_all_folders()[:limit]
+        
+        if folder_list:
+            for folder in folder_list:
+                click.echo(f"  {folder['source_path']:<50} | {folder['cascade_id']}")
+            
+            if len(folder_list) == limit:
+                click.echo(f"\n  (showing first {limit} folders)")
+        else:
+            click.echo("  No folders found.")
+    
+    if show_pages:
+        click.echo("\n📄 Pages:")
+        click.echo("=" * 80)
+        
+        if path:
+            page_list = [p for p in db.get_all_pages() if p['source_path'].startswith(path)][:limit]
+        else:
+            page_list = db.get_all_pages()[:limit]
+        
+        if page_list:
+            for page in page_list:
+                click.echo(f"  {page['source_path']:<50} | {page['cascade_id']}")
+            
+            if len(page_list) == limit:
+                click.echo(f"\n  (showing first {limit} pages)")
+        else:
+            click.echo("  No pages found.")
+    
+    click.echo()
+
+
+@main.command("migrate-db-clear")
+@click.confirmation_option(prompt="⚠️  This will clear ALL migration data. Are you sure?")
+def migrate_db_clear():
+    """Clear all data from the migration database (DESTRUCTIVE)"""
+    from migration.database import get_db
+    
+    db = get_db()
+    db.clear_all()
+    
+    click.echo("✅ Migration database cleared successfully.")
 
 
 if __name__ == "__main__":

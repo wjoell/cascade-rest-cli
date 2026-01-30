@@ -151,6 +151,58 @@ def copy_single_asset(
     return p.json()
 
 
+def copy_asset_by_id(
+    cms_path: str,
+    auth: dict,
+    asset_type: str,
+    asset_id: str,
+    destination_folder_id: str,
+    new_name: str,
+) -> Dict[str, Any]:
+    """Use Cascade Server's REST API copy endpoint to copy an asset using folder ID
+    
+    This is the Asset Factory pattern - copying a base/template asset to create new assets.
+    Uses folder ID instead of path for destination.
+
+    Parameters:
+        :cms_path: URI to Cascade Server instance
+        :auth: dict object with Cascade Server credentials
+        :asset_type: string indicating asset type ("folder", "page", "file", etc.)
+        :asset_id: string ID of the base asset to copy
+        :destination_folder_id: ID of the destination folder
+        :new_name: string name for the new copied asset
+    """
+    copy_path = f"{cms_path}/api/v1/copy/{asset_type}/{asset_id}"
+    
+    copy_parameters = {
+        "copyParameters": {
+            "destinationContainerIdentifier": {
+                "id": destination_folder_id,
+                "type": "folder",
+            },
+            "doWorkflow": False,
+            "newName": new_name,
+        }
+    }
+    
+    p = requests.post(copy_path, params=auth, json=copy_parameters)
+    result = p.json()
+    
+    if result.get("success"):
+        print(f"✓ Copied {asset_type}: {new_name}")
+    else:
+        error_msg = result.get('message', 'Unknown error')
+        
+        # Check for common collision/duplicate errors
+        if 'already exists' in error_msg.lower() or 'duplicate' in error_msg.lower():
+            print(f"⚠️  Collision detected - {asset_type} '{new_name}' already exists")
+            print(f"   Message: {error_msg}")
+        else:
+            print(f"✗ Failed to copy {asset_type}: {error_msg}")
+    
+    return result
+
+
 def move_asset(
     cms_path: str,
     auth: dict,
