@@ -794,6 +794,120 @@ def map_list_index_to_cards(origin_item: ET.Element, exclusions: List[str], imag
     return content_items
 
 
+def extract_video_id(url: str) -> tuple:
+    """
+    Extract video ID and source type from embed URL.
+    
+    Args:
+        url: Full embed URL (YouTube or Vimeo)
+        
+    Returns:
+        Tuple of (video_id, source_type) where source_type is 'vimeo' or 'youtube'
+    """
+    if not url:
+        return ('', '')
+    
+    # Vimeo patterns:
+    # https://player.vimeo.com/video/761484790
+    # https://vimeo.com/761484790
+    if 'vimeo.com' in url:
+        # Extract ID after /video/ or last path segment
+        match = re.search(r'/video/(\d+)', url)
+        if match:
+            return (match.group(1), 'vimeo')
+        match = re.search(r'vimeo\.com/(\d+)', url)
+        if match:
+            return (match.group(1), 'vimeo')
+    
+    # YouTube patterns:
+    # https://www.youtube.com/embed/vg2iN-8eHBo
+    # https://www.youtube.com/watch?v=vg2iN-8eHBo
+    # https://youtu.be/vg2iN-8eHBo
+    if 'youtube.com' in url or 'youtu.be' in url:
+        # Embed format
+        match = re.search(r'/embed/([\w-]+)', url)
+        if match:
+            return (match.group(1), 'youtube')
+        # Watch format
+        match = re.search(r'[?&]v=([\w-]+)', url)
+        if match:
+            return (match.group(1), 'youtube')
+        # Short format
+        match = re.search(r'youtu\.be/([\w-]+)', url)
+        if match:
+            return (match.group(1), 'youtube')
+    
+    return ('', '')
+
+
+def map_video_content(origin_item: ET.Element, exclusions: List[str]) -> List[ET.Element]:
+    """
+    Map Video type content from group-primary/group-secondary.
+    Extracts video ID from embed URL and creates media content item.
+    
+    Args:
+        origin_item: Origin item with type="Video"
+        exclusions: List to append XPath exclusions to
+        
+    Returns:
+        List with single media content item if video exists
+    """
+    content_items = []
+    
+    group_video = origin_item.find('.//group-video')
+    if group_video is None:
+        return content_items
+    
+    # Get URL and extract video ID
+    url = group_video.findtext('url', '')
+    title = group_video.findtext('title', '')
+    caption = group_video.findtext('text-video-caption', '')
+    
+    video_id, source_type = extract_video_id(url)
+    
+    if not video_id:
+        # Log exclusion for videos we can't parse
+        if url and url != 'https://www.youtube.com/embed/':
+            exclusions.append(f"Video (unparseable URL): {url}")
+        return content_items
+    
+    # Create media content item
+    item = create_section_content_item()
+    
+    # Set content type to media
+    content_type = item.find('content-item-type')
+    if content_type is not None:
+        content_type.text = 'media'
+    
+    # Set media details in the content item's group-single-media
+    all_media = item.findall('.//group-single-media')
+    media_group = all_media[-1] if all_media else None
+    
+    if media_group is not None:
+        # Set media type
+        media_type = media_group.find('media-type')
+        if media_type is not None:
+            media_type.text = source_type
+        
+        # Set video ID
+        if source_type == 'vimeo':
+            vimeo_elem = media_group.find('vimeo-id')
+            if vimeo_elem is not None:
+                vimeo_elem.text = video_id
+        elif source_type == 'youtube':
+            youtube_elem = media_group.find('youtube-id')
+            if youtube_elem is not None:
+                youtube_elem.text = video_id
+        
+        # Set caption if present
+        caption_elem = media_group.find('caption')
+        if caption_elem is not None and (caption or title):
+            caption_elem.text = caption or title
+    
+    content_items.append(item)
+    return content_items
+
+
 def map_intro_video(intro_elem: ET.Element, exclusions: List[str]) -> List[ET.Element]:
     """
     Map intro-video to media content item.
@@ -850,6 +964,206 @@ def map_intro_video(intro_elem: ET.Element, exclusions: List[str]) -> List[ET.El
     
     content_items.append(item)
     return content_items
+
+
+def map_image_content(origin_item: ET.Element, exclusions: List[str], images_found: List[str] = None) -> List[ET.Element]:
+    """
+    Map Image type content from group-primary/group-secondary.
+    
+    Args:
+        origin_item: Origin item with type="Image"
+        exclusions: List to append XPath exclusions to
+        images_found: Optional list to append found image filenames to
+        
+    Returns:
+        List with single media content item if image exists
+    """
+    content_items = []
+    
+    if images_found is None:
+        images_found = []
+    
+    group_image = origin_item.find('.//group-image')
+    if group_image is None:
+        return content_items
+    
+    # Get image path
+    file_image = group_image.find('.//file-image')
+    image_path = ''
+    if file_image is not None:
+        image_path = file_image.findtext('path', '')
+    
+    # Get other image properties
+    img_alt = group_image.findtext('img-alt', '')
+    img_caption = group_image.findtext('img-caption-text', '')
+    img_layout = group_image.findtext('img-layout', 'full')  # full, callout, etc.
+    
+    if not image_path or image_path == '/':
+        exclusions.append("Image (no image selected)")
+        return content_items
+    
+    # Log image for tracking
+    if image_path:
+        filename = image_path.split('/')[-1] if '/' in image_path else image_path
+        images_found.append(filename)
+    
+    # Create media content item
+    item = create_section_content_item()
+    
+    # Set content type to media
+    content_type = item.find('content-item-type')
+    if content_type is not None:
+        content_type.text = 'media'
+    
+    # Set media details - use the item-level group-single-media
+    all_media = item.findall('.//group-single-media')
+    media_group = all_media[-1] if all_media else None
+    
+    if media_group is not None:
+        # Set media type to image
+        media_type = media_group.find('media-type')
+        if media_type is not None:
+            media_type.text = 'img'
+        
+        # Set image path (CMS asset reference)
+        img_elem = media_group.find('img')
+        if img_elem is not None:
+            path_elem = img_elem.find('path')
+            if path_elem is not None:
+                # Strip .jpg/.png extension for CMS reference
+                clean_path = image_path
+                if clean_path.endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
+                    clean_path = clean_path.rsplit('.', 1)[0]
+                path_elem.text = clean_path
+        
+        # Set caption if present
+        caption_elem = media_group.find('caption')
+        if caption_elem is not None and img_caption:
+            caption_elem.text = img_caption
+        
+        # Set size based on layout
+        size_elem = media_group.find('size')
+        if size_elem is not None:
+            if img_layout == 'full':
+                size_elem.text = 'lg'
+            elif img_layout == 'callout':
+                size_elem.text = 'md'
+            else:
+                size_elem.text = 'md'
+    
+    content_items.append(item)
+    return content_items
+
+
+def map_form_content(origin_item: ET.Element, exclusions: List[str]) -> List[ET.Element]:
+    """
+    Map Form type content from group-primary/group-secondary.
+    Handles Hubspot, Formsite, Formstack, and Slate form types.
+    
+    Args:
+        origin_item: Origin item with type="Form"
+        exclusions: List to append XPath exclusions to
+        
+    Returns:
+        List with single form content item if form exists
+    """
+    content_items = []
+    
+    group_form = origin_item.find('.//group-form')
+    if group_form is None:
+        return content_items
+    
+    # Get form properties
+    form_type = group_form.findtext('type', '')  # Hubspot, Formsite, Formstack, Slate
+    form_id = group_form.findtext('id', '')
+    form_title = group_form.findtext('form-title', '')
+    
+    if not form_id:
+        exclusions.append(f"Form (no ID): {form_type}")
+        return content_items
+    
+    # Create content item
+    item = create_section_content_item()
+    
+    # Set content type to form
+    content_type = item.find('content-item-type')
+    if content_type is not None:
+        content_type.text = 'form'
+    
+    # Find and update the group-forms element
+    forms_group = item.find('.//group-forms')
+    if forms_group is not None:
+        # Map form type (origin uses different naming)
+        form_type_elem = forms_group.find('form-type')
+        if form_type_elem is not None:
+            # Map origin types to destination types
+            type_map = {
+                'Hubspot': 'hubspot',
+                'Formsite': 'formsite',
+                'Formstack': 'formstack',
+                'Slate': 'slate',
+            }
+            form_type_elem.text = type_map.get(form_type, 'basin')
+        
+        # Set form ID
+        form_id_elem = forms_group.find('form-id')
+        if form_id_elem is not None:
+            form_id_elem.text = form_id
+        
+        # Set accessible title
+        title_elem = forms_group.find('accessible-title')
+        if title_elem is not None and form_title:
+            title_elem.text = form_title
+    
+    content_items.append(item)
+    return content_items
+
+
+def map_gallery_content(origin_item: ET.Element, exclusions: List[str]) -> List[ET.Element]:
+    """
+    Map Publish API Gallery type content from group-primary/group-secondary.
+    
+    Args:
+        origin_item: Origin item with type="Publish API Gallery"
+        exclusions: List to append XPath exclusions to
+        
+    Returns:
+        List with single gallery content item if gallery exists
+    """
+    content_items = []
+    
+    gallery = origin_item.find('.//publish-api-gallery')
+    if gallery is None:
+        return content_items
+    
+    # Get gallery ID
+    gallery_id = gallery.findtext('gallery-api-id', '')
+    
+    if not gallery_id:
+        exclusions.append("Publish API Gallery (no gallery ID)")
+        return content_items
+    
+    # Get display properties
+    display_type = gallery.findtext('display-type', 'carousel')
+    img_fit = gallery.findtext('img-fit', 'cover')
+    aspect_ratio = gallery.findtext('aspect-ratio', '1.5')
+    allow_fullscreen = gallery.findtext('allow-fullscreen', 'true')
+    img_captions = gallery.findtext('img-captions', 'no')
+    
+    # Create content item
+    item = create_section_content_item()
+    
+    # Set content type to gallery
+    content_type = item.find('content-item-type')
+    if content_type is not None:
+        content_type.text = 'gallery'
+    
+    # Note: The actual gallery configuration goes in the section's media-or-galleries,
+    # not in the content item. For now, we'll log the gallery ID for manual placement.
+    exclusions.append(f"Gallery ID: {gallery_id} (type: {display_type}, needs manual placement in section media-or-galleries)")
+    
+    # Return empty - galleries need special handling at section level
+    return []
 
 
 def map_button_navigation_group(origin_item: ET.Element, exclusions: List[str]) -> None:

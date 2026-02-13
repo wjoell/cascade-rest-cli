@@ -25,6 +25,10 @@ from xml_mappers import (
     map_list_index_to_cards,
     map_quote_content,
     map_intro_video,
+    map_video_content,
+    map_image_content,
+    map_form_content,
+    map_gallery_content,
     map_button_navigation_group,
     log_heading_id_exclusions,
     create_page_section,
@@ -167,6 +171,37 @@ def migrate_single_file(origin_path: str, destination_path: str) -> dict:
                 content_items = map_quote_content(item, stats['exclusions'])
                 print(f"    → Created {len(content_items)} quote items")
             
+            elif item_type == "Video":
+                # Map video content
+                content_items = map_video_content(item, stats['exclusions'])
+                if content_items:
+                    print(f"    → Created {len(content_items)} video items")
+                else:
+                    xpath = generate_xpath_exclusion(region, i, item_type="Video (empty)")
+                    stats['exclusions'].append(xpath)
+                    print(f"    → Excluded: {xpath}")
+            
+            elif item_type == "Image":
+                # Map image content
+                content_items = map_image_content(item, stats['exclusions'], stats['images_found'])
+                if content_items:
+                    print(f"    → Created {len(content_items)} image items")
+                else:
+                    print(f"    → Excluded: Image (no image or excluded)")
+            
+            elif item_type == "Form":
+                # Map form content
+                content_items = map_form_content(item, stats['exclusions'])
+                if content_items:
+                    print(f"    → Created {len(content_items)} form items")
+                else:
+                    print(f"    → Excluded: Form (no ID or excluded)")
+            
+            elif item_type == "Publish API Gallery":
+                # Map gallery content (logs for manual placement)
+                content_items = map_gallery_content(item, stats['exclusions'])
+                print(f"    → Gallery logged for manual placement")
+            
             elif item_type == "Button navigation group":
                 # Exclude button nav, but log details
                 map_button_navigation_group(item, stats['exclusions'])
@@ -281,9 +316,14 @@ def migrate_single_file(origin_path: str, destination_path: str) -> dict:
 
 
 if __name__ == '__main__':
-    # Test with about/history/index.xml
-    origin_file = "/Users/winston/Repositories/wjoell/slc-edu-migration/source-assets/migration-clean/about/history/index.xml"
-    dest_file = "/Users/winston/Repositories/wjoell/slc-edu-migration/source-assets/migration-clean/about/history/index-destination.xml"
+    # Accept command-line arguments or use defaults
+    if len(sys.argv) >= 3:
+        origin_file = sys.argv[1]
+        dest_file = sys.argv[2]
+    else:
+        # Default test file
+        origin_file = "/Users/winston/Repositories/wjoell/slc-edu-migration/source-assets/migration-clean/about/history/index.xml"
+        dest_file = "/Users/winston/Repositories/wjoell/slc-edu-migration/source-assets/migration-clean/about/history/index-destination.xml"
     
     print("=" * 80)
     print("PROOF OF CONCEPT: XML STRUCTURE MIGRATION")
