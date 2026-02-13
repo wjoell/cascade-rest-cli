@@ -64,6 +64,20 @@ class MigrationDatabase:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Links table (for symlink assets)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS links (
+                source_key TEXT PRIMARY KEY,          -- e.g., 'link-assets/{folder}/{link_name}'
+                cascade_id TEXT NOT NULL,             -- Cascade asset ID
+                folder_name TEXT NOT NULL,            -- Domain folder name
+                link_name TEXT NOT NULL,              -- Symlink asset name
+                url TEXT,                             -- Target URL
+                title TEXT,                           -- Optional display title
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         
         # Create indexes for faster lookups
         cursor.execute("""
@@ -84,6 +98,16 @@ class MigrationDatabase:
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_pages_folder 
             ON pages(folder_path)
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_links_cascade_id
+            ON links(cascade_id)
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_links_folder
+            ON links(folder_name)
         """)
         
         self.conn.commit()
@@ -140,6 +164,35 @@ class MigrationDatabase:
         
         self.conn.commit()
         return True
+
+    def add_link(self, source_key: str, cascade_id: str,
+                 folder_name: str, link_name: str,
+                 url: Optional[str] = None, title: Optional[str] = None) -> bool:
+        """Add or update a symlink asset record."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO links
+            (source_key, cascade_id, folder_name, link_name, url, title, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (source_key, cascade_id, folder_name, link_name, url, title, datetime.now().isoformat()),
+        )
+        self.conn.commit()
+        return True
+
+    def get_link_id(self, source_key: str) -> Optional[str]:
+        """Get Cascade ID for a symlink by its source key."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT cascade_id FROM links WHERE source_key = ?",
+            (source_key,),
+        )
+        row = cursor.fetchone()
+        return row['cascade_id'] if row else None
+
+    def link_exists(self, source_key: str) -> bool:
+        return self.get_link_id(source_key) is not None
     
     def get_folder_id(self, source_path: str) -> Optional[str]:
         """
@@ -240,11 +293,15 @@ class MigrationDatabase:
         
         cursor.execute("SELECT COUNT(*) as count FROM pages")
         page_count = cursor.fetchone()['count']
+
+        cursor.execute("SELECT COUNT(*) as count FROM links")
+        link_count = cursor.fetchone()['count']
         
         return {
             'folders': folder_count,
             'pages': page_count,
-            'total': folder_count + page_count
+            'links': link_count,
+            'total': folder_count + page_count + link_count
         }
     
     def clear_all(self):
@@ -252,6 +309,7 @@ class MigrationDatabase:
         cursor = self.conn.cursor()
         cursor.execute("DELETE FROM folders")
         cursor.execute("DELETE FROM pages")
+        cursor.execute("DELETE FROM links")
         self.conn.commit()
     
     def close(self):

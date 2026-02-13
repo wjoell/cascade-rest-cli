@@ -21,4 +21,4 @@ PAGE_FILE_EXTENSION = ".xml"
 
 # Test mode filters (set to None for full migration)
 # Example: TEST_FOLDER_FILTER = "about" to only process about folder and subfolders
-TEST_FOLDER_FILTER = "about"  # Set to folder name like "about" for testing
+TEST_FOLDER_FILTER = None  # Set to folder name for testing, None for full migration
