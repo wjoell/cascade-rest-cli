@@ -11,6 +11,7 @@ Demonstrates the complete migration workflow:
 import sys
 from pathlib import Path
 from xml.etree import ElementTree as ET
+from xml.sax.saxutils import escape as xml_escape
 from xml_analyzer import (
     detect_active_regions,
     get_active_region_items,
@@ -257,10 +258,10 @@ def migrate_single_file(origin_path: str, destination_path: str) -> dict:
         # Clear default content
         migration_summary.clear()
         
-        # Build summary XHTML
+        # Build summary XHTML (escape special chars to prevent XML parsing errors)
         exclusions_html = ''
         if stats['exclusions']:
-            exclusion_items = '\n'.join(f"<li>{ex}</li>" for ex in stats['exclusions'])
+            exclusion_items = '\n'.join(f"<li>{xml_escape(str(ex))}</li>" for ex in stats['exclusions'])
             exclusions_html = f"""
 <h3>Exclusions</h3>
 <ul>
@@ -271,12 +272,16 @@ def migrate_single_file(origin_path: str, destination_path: str) -> dict:
         if stats['images_found']:
             # Get unique images
             unique_images = sorted(set(stats['images_found']))
-            image_items = '\n'.join(f"<li>{img}</li>" for img in unique_images)
+            image_items = '\n'.join(f"<li>{xml_escape(str(img))}</li>" for img in unique_images)
             images_html = f"""
 <h3>Images Found in WYSIWYG (Stripped)</h3>
 <ul>
 {image_items}
 </ul>"""
+        
+        # Escape metadata values
+        title_escaped = xml_escape(str(metadata.get('title', 'Unknown')))
+        path_escaped = xml_escape(str(metadata.get('path', 'Unknown')))
         
         summary_xhtml = f"""<h2>Migration Report</h2>
 <h3>Statistics</h3>
@@ -288,8 +293,8 @@ def migrate_single_file(origin_path: str, destination_path: str) -> dict:
 </ul>{exclusions_html}{images_html}
 <h3>Source Page</h3>
 <ul>
-<li>Title: {metadata.get('title', 'Unknown')}</li>
-<li>Path: {metadata.get('path', 'Unknown')}</li>
+<li>Title: {title_escaped}</li>
+<li>Path: {path_escaped}</li>
 </ul>"""
         
         # Parse and append as XML children (not escaped text)
