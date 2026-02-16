@@ -13,6 +13,26 @@ from typing import List, Dict, Tuple, Optional
 from xml.etree import ElementTree as ET
 
 
+def get_calling_page(xml_root: ET.Element) -> Optional[ET.Element]:
+    """
+    Get the calling-page element which contains the canonical page content.
+    
+    The source XML may contain duplicated content in both system-index-block
+    hierarchy AND calling-page. We only want to process calling-page.
+    
+    Args:
+        xml_root: Root of origin XML document
+        
+    Returns:
+        The calling-page element or None
+    """
+    calling_page = xml_root.find('.//calling-page')
+    if calling_page is not None:
+        return calling_page
+    # Fallback to root if no calling-page (shouldn't happen)
+    return xml_root
+
+
 def detect_active_regions(xml_root: ET.Element) -> Dict[str, bool]:
     """
     Detect which regions are active in origin XML.
@@ -35,8 +55,11 @@ def detect_active_regions(xml_root: ET.Element) -> Dict[str, bool]:
         'secondary': False
     }
     
+    # Only look in calling-page to avoid duplicates
+    search_root = get_calling_page(xml_root)
+    
     # Find group-settings node
-    group_settings = xml_root.find('.//group-settings')
+    group_settings = search_root.find('.//group-settings')
     if group_settings is None:
         return regions
     
@@ -68,11 +91,14 @@ def get_active_region_items(xml_root: ET.Element, region_name: str) -> List[ET.E
     """
     active_items = []
     
+    # Only look in calling-page to avoid duplicates
+    search_root = get_calling_page(xml_root)
+    
     # Map region name to group name
     group_name = f'group-{region_name}'
     
     # Find all items in this group
-    items = xml_root.findall(f'.//{group_name}')
+    items = search_root.findall(f'.//{group_name}')
     
     for item in items:
         # Check status field
@@ -99,22 +125,142 @@ def get_item_type(item: ET.Element) -> Optional[str]:
     return None
 
 
-def parse_wysiwyg_element_to_sections(wysiwyg_elem: ET.Element) -> List[Dict]:
+def get_item_section_heading(item: ET.Element) -> Optional[Dict]:
+    """
+    Get the section heading info from an item if it has one.
+    
+    Items with use-section-heading=yes have their heading in <section-heading>
+    and heading level in <section-heading-level>.
+    
+    Args:
+        item: XML element representing a content item
+        
+    Returns:
+        Dict with 'text' and 'level' keys, or None if no section heading
+    """
+    use_heading = item.find('.//use-section-heading')
+    if use_heading is None or use_heading.text != 'yes':
+        return None
+    
+    heading_text = item.findtext('.//section-heading', '')
+    heading_level = item.findtext('.//section-heading-level', 'h2')
+    
+    if not heading_text:
+        return None
+    
+    return {
+        'text': heading_text,
+        'level': heading_level
+    }
+
+
+def has_wysiwyg_content(item: ET.Element) -> bool:
+    """
+    Check if an item has non-empty WYSIWYG content.
+    
+    Args:
+        item: XML element representing a content item
+        
+    Returns:
+        True if WYSIWYG has content, False otherwise
+    """
+    wysiwyg = item.find('.//group-text/wysiwyg')
+    if wysiwyg is None:
+        return False
+    
+    # Check if it has any children or text content
+    if len(wysiwyg) > 0:
+        return True
+    if wysiwyg.text and wysiwyg.text.strip():
+        return True
+    
+    return False
+
+
+def extract_heading_content(heading_elem: ET.Element) -> Dict:
+    """
+    Extract text content and images from a heading element.
+    
+    Images inside headings are extracted separately. If an image has class
+    'left' or 'right', it's a candidate for prose-image content type.
+    Text and valid inline elements (em, strong, a) are preserved.
+    
+    Args:
+        heading_elem: An h2-h5 element
+        
+    Returns:
+        Dict with:
+        - 'text': clean heading text
+        - 'images': list of image info dicts
+        - 'floated_image': first image with left/right class (for prose-image), or None
+    """
+    images = []
+    text_parts = []
+    floated_image = None
+    
+    # Collect text before first child
+    if heading_elem.text:
+        text_parts.append(heading_elem.text)
+    
+    for child in heading_elem:
+        if child.tag == 'img':
+            # Extract image info
+            src = child.get('src', '')
+            alt = child.get('alt', '')
+            img_class = child.get('class', '')
+            filename = src.split('/')[-1] if '/' in src else src
+            
+            img_info = {
+                'src': src,
+                'alt': alt,
+                'filename': filename,
+                'class': img_class
+            }
+            
+            # Check if this is a floated image (candidate for prose-image)
+            if floated_image is None and ('left' in img_class or 'right' in img_class):
+                img_info['position'] = 'left' if 'left' in img_class else 'right'
+                floated_image = img_info
+            else:
+                images.append(img_info)
+            
+            # Include tail text (text after the img)
+            if child.tail:
+                text_parts.append(child.tail)
+        else:
+            # Keep other inline elements (em, strong, a, etc.) as HTML
+            elem_html = ET.tostring(child, encoding='unicode', method='html')
+            text_parts.append(elem_html)
+    
+    return {
+        'text': ''.join(text_parts).strip(),
+        'images': images,
+        'floated_image': floated_image
+    }
+
+
+def parse_wysiwyg_element_to_sections(wysiwyg_elem: ET.Element, heading_images: List[Dict] = None) -> List[Dict]:
     """
     Parse WYSIWYG XML element into heading + content sections.
     
     Works directly with XML elements to preserve HTML structure without escaping.
+    Images inside headings with left/right class are passed as 'floated_image' for prose-image.
+    Other heading images are logged separately.
     
     Args:
         wysiwyg_elem: WYSIWYG XML element
+        heading_images: Optional list to append non-floated images found in headings
         
     Returns:
-        List of section dictionaries with 'heading', 'heading_level', and 'content_elem'
+        List of section dictionaries with 'heading', 'heading_level', 'content_elem', and optionally 'floated_image'
     """
     sections = []
     
     if wysiwyg_elem is None:
         return sections
+    
+    if heading_images is None:
+        heading_images = []
     
     # Find all heading elements (h2-h5)
     current_section = None
@@ -131,14 +277,18 @@ def parse_wysiwyg_element_to_sections(wysiwyg_elem: ET.Element) -> List[Dict]:
                 current_section['content_elements'] = content_elements
                 sections.append(current_section)
             
-            # Start new section
-            heading_text = ET.tostring(child, encoding='unicode', method='html')
-            # Remove the heading tags
-            heading_text = re.sub(r'^<h[2-5][^>]*>(.*?)</h[2-5]>$', r'\1', heading_text, flags=re.DOTALL)
+            # Extract heading content, separating images
+            heading_content = extract_heading_content(child)
+            
+            # Log any non-floated images found in headings
+            for img_info in heading_content['images']:
+                img_info['context'] = f"Found in {child.tag} heading (no float class)"
+                heading_images.append(img_info)
             
             current_section = {
-                'heading': heading_text.strip(),
-                'heading_level': child.tag
+                'heading': heading_content['text'],
+                'heading_level': child.tag,
+                'floated_image': heading_content.get('floated_image')  # Pass floated image to section
             }
             content_elements = []
             
@@ -160,10 +310,63 @@ def parse_wysiwyg_element_to_sections(wysiwyg_elem: ET.Element) -> List[Dict]:
         sections.append({
             'heading': '',
             'heading_level': '',
-            'content_elements': content_elements
+            'content_elements': content_elements,
+            'floated_image': None
         })
     
+    # Post-process: detect h2 immediately followed by h3 pattern
+    # When h2 has no content and is followed by h3, the h2 becomes a section_heading
+    sections = _detect_section_heading_pattern(sections)
+    
     return sections
+
+
+def _detect_section_heading_pattern(sections: List[Dict]) -> List[Dict]:
+    """
+    Detect h2→h3 pattern (h2 with no content immediately followed by h3).
+    
+    When this pattern is found:
+    - The h2 becomes the 'section_heading' for the h3 section
+    - The h2 section is removed (merged into h3 section)
+    - This indicates a new group-page-section-item should be created
+    
+    Args:
+        sections: List of section dicts from parse_wysiwyg_element_to_sections
+        
+    Returns:
+        Modified list with section_heading markers
+    """
+    if len(sections) < 2:
+        return sections
+    
+    result = []
+    i = 0
+    
+    while i < len(sections):
+        section = sections[i]
+        
+        # Check if this is an h2 with no content
+        is_h2_empty = (
+            section.get('heading_level') == 'h2' and
+            not section.get('content_elements', [])
+        )
+        
+        # Check if next section is h3
+        if is_h2_empty and i + 1 < len(sections):
+            next_section = sections[i + 1]
+            if next_section.get('heading_level') == 'h3':
+                # h2→h3 pattern detected!
+                # Add section_heading to the h3 section and skip the h2
+                next_section['section_heading'] = section['heading']
+                next_section['section_heading_floated_image'] = section.get('floated_image')
+                # Skip the h2 section - it's now merged
+                i += 1
+                continue
+        
+        result.append(section)
+        i += 1
+    
+    return result
 
 
 def parse_wysiwyg_to_sections(wysiwyg_content: str) -> List[Dict[str, str]]:

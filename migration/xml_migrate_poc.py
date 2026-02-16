@@ -12,10 +12,13 @@ import sys
 from pathlib import Path
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
+from migration_logger import MigrationLogger, GlobalMigrationLog
 from xml_analyzer import (
     detect_active_regions,
     get_active_region_items,
     get_item_type,
+    get_item_section_heading,
+    has_wysiwyg_content,
     extract_metadata,
     generate_xpath_exclusion
 )
@@ -37,13 +40,15 @@ from xml_mappers import (
 )
 
 
-def migrate_single_file(origin_path: str, destination_path: str) -> dict:
+def migrate_single_file(origin_path: str, destination_path: str, 
+                        global_log_path: str = None) -> dict:
     """
     Migrate a single origin XML file to destination format.
     
     Args:
         origin_path: Path to origin .xml file
         destination_path: Path to destination -destination.xml file
+        global_log_path: Optional path to global log file for batch operations
         
     Returns:
         Dict with migration statistics
@@ -68,8 +73,14 @@ def migrate_single_file(origin_path: str, destination_path: str) -> dict:
     
     # Extract metadata
     metadata = extract_metadata(origin_root)
+    page_path = metadata.get('path', 'Unknown')
     print(f"Page: {metadata.get('title', 'Unknown')}")
-    print(f"Path: {metadata.get('path', 'Unknown')}")
+    print(f"Path: {page_path}")
+    
+    # Initialize migration logger
+    logger = MigrationLogger(page_path=page_path, file_path=origin_path)
+    if global_log_path:
+        logger.set_global_log_file(global_log_path)
     
     # Detect active regions
     regions = detect_active_regions(origin_root)
@@ -125,6 +136,9 @@ def migrate_single_file(origin_path: str, destination_path: str) -> dict:
         section_has_content = False
         section_content_items = []  # Collect items to insert later
         
+        # Track pending section heading from item-level h2→h3 pattern
+        pending_section_heading = None
+        
         for i, item in enumerate(items, 1):
             item_type = get_item_type(item)
             print(f"\n  Item {i}: Type={item_type}")
@@ -132,8 +146,125 @@ def migrate_single_file(origin_path: str, destination_path: str) -> dict:
             content_items = []
             
             if item_type == "Text":
-                # Map text content (splits on headings)
-                content_items = map_text_content(item, stats['exclusions'], stats['images_found'])
+                # Check for item-level section heading (in section-heading field, not WYSIWYG)
+                item_section_heading = get_item_section_heading(item)
+                item_has_content = has_wysiwyg_content(item)
+                
+                # Detect h2→h3 pattern at item level:
+                # If this item has h2 section heading with no content, look ahead
+                if (item_section_heading and 
+                    item_section_heading.get('level') == 'h2' and 
+                    not item_has_content):
+                    # Check if next item is h3 with content
+                    if i < len(items):
+                        next_item = items[i]  # items is 0-indexed, i is 1-indexed so items[i] is next
+                        next_heading = get_item_section_heading(next_item)
+                        next_has_content = has_wysiwyg_content(next_item)
+                        
+                        if (next_heading and 
+                            next_heading.get('level') == 'h3' and 
+                            next_has_content):
+                            # h2→h3 pattern detected! Store h2 for next item's section
+                            pending_section_heading = item_section_heading['text']
+                            print(f"    → h2→h3 pattern detected, storing '{pending_section_heading}' for next section")
+                            continue  # Skip this item, it will be used as section heading for next
+                
+                # Map text content (splits on headings within WYSIWYG)
+                # Returns list of dicts: {'item': element, 'section_heading': optional h2 text}
+                # Pass item_section_heading so items with section-heading field get that as subheading
+                text_results = map_text_content(
+                    item, stats['exclusions'], stats['images_found'],
+                    item_heading=item_section_heading
+                )
+                content_items = [r['item'] for r in text_results if not r.get('section_heading')]
+                
+                # Handle h2→h3 pattern from WYSIWYG: items with section_heading create new sections
+                for result in text_results:
+                    if result.get('section_heading'):
+                        # First, flush any pending content items to current section
+                        if section_content_items:
+                            if not first_section_used:
+                                insert_content_items(first_section, section_content_items)
+                                first_section.find('section-mode').text = 'flow'
+                                first_section_used = True
+                                stats['sections_created'] += 1
+                            else:
+                                section = create_page_section(section_mode="flow")
+                                insert_content_items(section, section_content_items)
+                                cta_banner = dest_structure.find('group-cta-banner')
+                                if cta_banner is not None:
+                                    insert_index = list(dest_structure).index(cta_banner)
+                                    dest_structure.insert(insert_index, section)
+                                else:
+                                    dest_structure.append(section)
+                                stats['sections_created'] += 1
+                            section_content_items = []
+                        
+                        # Create new section with h2 as content-heading
+                        new_section = create_page_section(
+                            section_mode="flow",
+                            content_heading=result['section_heading']
+                        )
+                        insert_content_items(new_section, [result['item']])
+                        
+                        # Insert before cta-banner
+                        cta_banner = dest_structure.find('group-cta-banner')
+                        if cta_banner is not None:
+                            insert_index = list(dest_structure).index(cta_banner)
+                            dest_structure.insert(insert_index, new_section)
+                        else:
+                            dest_structure.append(new_section)
+                        
+                        first_section_used = True
+                        stats['sections_created'] += 1
+                        stats['content_items_created'] += 1
+                        print(f"    → Created new section with heading '{result['section_heading']}'")
+                
+                # Check if we have a pending section heading from item-level h2→h3 pattern
+                if pending_section_heading and content_items:
+                    # Flush any existing content first
+                    if section_content_items:
+                        if not first_section_used:
+                            insert_content_items(first_section, section_content_items)
+                            first_section.find('section-mode').text = 'flow'
+                            first_section_used = True
+                            stats['sections_created'] += 1
+                        else:
+                            section = create_page_section(section_mode="flow")
+                            insert_content_items(section, section_content_items)
+                            cta_banner = dest_structure.find('group-cta-banner')
+                            if cta_banner is not None:
+                                insert_index = list(dest_structure).index(cta_banner)
+                                dest_structure.insert(insert_index, section)
+                            else:
+                                dest_structure.append(section)
+                            stats['sections_created'] += 1
+                        section_content_items = []
+                    
+                    # Create new section with the pending h2 as content-heading
+                    new_section = create_page_section(
+                        section_mode="flow",
+                        content_heading=pending_section_heading
+                    )
+                    insert_content_items(new_section, content_items)
+                    
+                    # Insert before cta-banner
+                    cta_banner = dest_structure.find('group-cta-banner')
+                    if cta_banner is not None:
+                        insert_index = list(dest_structure).index(cta_banner)
+                        dest_structure.insert(insert_index, new_section)
+                    else:
+                        dest_structure.append(new_section)
+                    
+                    first_section_used = True
+                    stats['sections_created'] += 1
+                    stats['content_items_created'] += len(content_items)
+                    print(f"    → Created new section with heading '{pending_section_heading}' (from item-level h2→h3 pattern)")
+                    print(f"    → Added {len(content_items)} content items")
+                    
+                    pending_section_heading = None
+                    content_items = []  # Already added to section
+                
                 print(f"    → Created {len(content_items)} content items from WYSIWYG")
                 
             elif item_type == "Accordion":
@@ -248,56 +379,42 @@ def migrate_single_file(origin_path: str, destination_path: str) -> dict:
             
             stats['sections_created'] += 1
     
-    # Add migration summary
+    # Convert old stats to logger entries
     print(f"\n{'='*60}")
-    print("Adding migration summary")
+    print("Building migration log")
     print(f"{'='*60}")
     
+    # Log successful migrations (INFO)
+    if stats['sections_created'] > 0:
+        logger.info(f"Created {stats['sections_created']} section(s) with {stats['content_items_created']} content item(s)")
+    
+    # Log exclusions (WARNING) - these are planned skips
+    for exclusion in stats['exclusions']:
+        logger.warning(f"Excluded: {exclusion}")
+    
+    # Log images found (categorize by type)
+    for img_entry in stats['images_found']:
+        img_str = str(img_entry)
+        if 'NO ASSET ID FOUND' in img_str:
+            # Failed lookup = ERROR
+            logger.error(f"Image asset lookup failed: {img_str}")
+        elif 'excluded' in img_str.lower() or 'removed' in img_str.lower() or 'downgraded' in img_str.lower():
+            # Planned removals/changes = WARNING
+            logger.warning(img_str)
+        else:
+            # Successful mapping = INFO
+            logger.info(f"Image processed: {img_str}")
+    
+    # Add migration summary to destination XML
     migration_summary = dest_structure.find('.//migration-summary')
     if migration_summary is not None:
         # Clear default content
         migration_summary.clear()
         
-        # Build summary XHTML (escape special chars to prevent XML parsing errors)
-        exclusions_html = ''
-        if stats['exclusions']:
-            exclusion_items = '\n'.join(f"<li>{xml_escape(str(ex))}</li>" for ex in stats['exclusions'])
-            exclusions_html = f"""
-<h3>Exclusions</h3>
-<ul>
-{exclusion_items}
-</ul>"""
+        # Use logger's formatted output (wrapped in <code>)
+        summary_xhtml = logger.format_for_summary()
         
-        images_html = ''
-        if stats['images_found']:
-            # Get unique images
-            unique_images = sorted(set(stats['images_found']))
-            image_items = '\n'.join(f"<li>{xml_escape(str(img))}</li>" for img in unique_images)
-            images_html = f"""
-<h3>Images Found in WYSIWYG (Stripped)</h3>
-<ul>
-{image_items}
-</ul>"""
-        
-        # Escape metadata values
-        title_escaped = xml_escape(str(metadata.get('title', 'Unknown')))
-        path_escaped = xml_escape(str(metadata.get('path', 'Unknown')))
-        
-        summary_xhtml = f"""<h2>Migration Report</h2>
-<h3>Statistics</h3>
-<ul>
-<li>Sections created: {stats['sections_created']}</li>
-<li>Content items created: {stats['content_items_created']}</li>
-<li>Items excluded: {len(stats['exclusions'])}</li>
-<li>Images found: {len(set(stats['images_found']))}</li>
-</ul>{exclusions_html}{images_html}
-<h3>Source Page</h3>
-<ul>
-<li>Title: {title_escaped}</li>
-<li>Path: {path_escaped}</li>
-</ul>"""
-        
-        # Parse and append as XML children (not escaped text)
+        # Parse and append as XML children
         try:
             temp = ET.fromstring(f'<temp>{summary_xhtml}</temp>')
             migration_summary.text = temp.text
@@ -308,6 +425,9 @@ def migrate_single_file(origin_path: str, destination_path: str) -> dict:
             print(f"Warning: Could not parse migration summary as XML: {e}")
             migration_summary.text = summary_xhtml
     
+    # Write to global log file (for batch operations)
+    logger.write_to_global_log()
+    
     # Write destination XML
     print(f"\nWriting destination: {destination_path}")
     
@@ -317,14 +437,23 @@ def migrate_single_file(origin_path: str, destination_path: str) -> dict:
     dest_tree.write(destination_path, encoding='unicode', xml_declaration=False)
     
     stats['success'] = True
+    stats['logger'] = logger  # Include logger in stats for batch operations
     return stats
 
 
 if __name__ == '__main__':
     # Accept command-line arguments or use defaults
+    # Usage: python xml_migrate_poc.py <origin_file> <dest_file> [--global-log <log_file>]
+    global_log_path = None
+    
     if len(sys.argv) >= 3:
         origin_file = sys.argv[1]
         dest_file = sys.argv[2]
+        # Check for --global-log option
+        if '--global-log' in sys.argv:
+            log_idx = sys.argv.index('--global-log')
+            if log_idx + 1 < len(sys.argv):
+                global_log_path = sys.argv[log_idx + 1]
     else:
         # Default test file
         origin_file = "/Users/winston/Repositories/wjoell/slc-edu-migration/source-assets/migration-clean/about/history/index.xml"
@@ -335,7 +464,7 @@ if __name__ == '__main__':
     print("=" * 80)
     print()
     
-    stats = migrate_single_file(origin_file, dest_file)
+    stats = migrate_single_file(origin_file, dest_file, global_log_path=global_log_path)
     
     print()
     print("=" * 80)
@@ -344,13 +473,22 @@ if __name__ == '__main__':
     print(f"Success: {stats['success']}")
     print(f"Sections: {stats['sections_created']}")
     print(f"Content Items: {stats['content_items_created']}")
-    print(f"Exclusions: {len(stats['exclusions'])}")
+    
+    # Print logger stats
+    if 'logger' in stats:
+        log_stats = stats['logger'].get_stats()
+        print(f"\nLog Entries:")
+        print(f"  Errors:   {log_stats['errors']}")
+        print(f"  Warnings: {log_stats['warnings']}")
+        print(f"  Info:     {log_stats['info']}")
     
     if stats['success']:
         print(f"\n✅ Destination file written: {dest_file}")
+        if global_log_path:
+            print(f"📋 Log appended to: {global_log_path}")
         print("\nNext steps:")
         print("1. Review the destination XML file")
-        print("2. Check migration-summary field for exclusions")
+        print("2. Check migration-summary field for log entries")
         print("3. Validate structure matches expected format")
     else:
         print("\n❌ Migration failed")
