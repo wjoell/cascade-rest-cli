@@ -115,12 +115,26 @@ def update_csv_with_asset_ids(csv_file: str, filename_to_id: Dict[str, int], out
         renamed_file = row['renamed_file']
         filename_no_ext = strip_extension(renamed_file)
         
+        # First try exact match
         if filename_no_ext in filename_to_id:
             row['asset_id'] = filename_to_id[filename_no_ext]
             matched += 1
         else:
-            row['asset_id'] = ''
-            not_matched.append(renamed_file)
+            # Try suffix match - some gallery filenames don't have path prefix
+            # e.g., CSV has "news-events_lago.jpeg" -> "news-events_lago"
+            #       gallery has "lago.jpeg" -> need to match "lago" as suffix
+            found = False
+            for gallery_filename, asset_id in filename_to_id.items():
+                gallery_no_ext = strip_extension(gallery_filename)
+                if filename_no_ext.endswith('_' + gallery_no_ext) or filename_no_ext == gallery_no_ext:
+                    row['asset_id'] = asset_id
+                    matched += 1
+                    found = True
+                    break
+            
+            if not found:
+                row['asset_id'] = ''
+                not_matched.append(renamed_file)
     
     # Write updated CSV
     fieldnames = ['renamed_file', 'cms_asset_path', 'original_path', 'actual_path', 'source_file', 'asset_id']
