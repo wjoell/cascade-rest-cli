@@ -360,7 +360,26 @@ def clean_wysiwyg_content(wysiwyg_elem: ET.Element, images_found: List[str] = No
                 # Strip .xml extension from managed assets
                 elif path.endswith('.xml'):
                     path = path[:-4]
+                # Strip .html extension
+                elif '.html' in path:
+                    # Handle .html#anchor case
+                    if '#' in path:
+                        base, anchor = path.split('#', 1)
+                        path = base.replace('-migration.html', '').replace('.html', '') + '#' + anchor
+                    else:
+                        path = path.replace('-migration.html', '').replace('.html', '')
                 
+                child.set('href', path)
+            
+            # Handle root-relative paths with .html extension
+            elif href.startswith('/') and '.html' in href:
+                path = href
+                # Handle .html#anchor case
+                if '#' in path:
+                    base, anchor = path.split('#', 1)
+                    path = base.replace('-migration.html', '').replace('.html', '') + '#' + anchor
+                else:
+                    path = path.replace('-migration.html', '').replace('.html', '')
                 child.set('href', path)
         
         # Strip class and aria-* attributes from all elements
@@ -702,6 +721,22 @@ def create_section_content_item(heading: str = "", heading_level: str = "h2",
     ET.SubElement(media2, 'position').text = 'auto'
     ET.SubElement(media2, 'size').text = 'md'
     
+    # Publish API Gallery (for content-item-type='api-gallery')
+    gallery = ET.SubElement(item, 'publish-api-gallery')
+    ET.SubElement(gallery, 'gallery-api-id')
+    ET.SubElement(gallery, 'display-type').text = 'side-scroller'
+    ET.SubElement(gallery, 'bool-download').text = 'false'
+    ET.SubElement(gallery, 'down-url')
+    ET.SubElement(gallery, 'controls').text = 'true'
+    ET.SubElement(gallery, 'aspect-ratio').text = '1.5'
+    ET.SubElement(gallery, 'img-fit').text = 'contain'
+    ET.SubElement(gallery, 'img-captions').text = 'no'
+    ET.SubElement(gallery, 'allow-fullscreen').text = 'true'
+    ET.SubElement(gallery, 'chiron').text = 'false'
+    ET.SubElement(gallery, 'chiron-position').text = 'default'
+    chiron_img = ET.SubElement(gallery, 'chiron-img')
+    ET.SubElement(chiron_img, 'path').text = '/'
+    
     # CTA button (disabled)
     ET.SubElement(item, 'use-cta').text = 'false'
     cta = ET.SubElement(item, 'group-cta-button')
@@ -774,6 +809,64 @@ def create_media_content_item(asset_id: str, alt_text: str = '', caption: str = 
     media_elem = item.find('group-single-media')
     if media_elem is not None:
         set_group_single_media(media_elem, asset_id, position='auto', caption=caption)
+    
+    return item
+
+
+def create_gallery_content_item(gallery_id: str, display_type: str = 'side-scroller',
+                                 aspect_ratio: str = '1.5', img_fit: str = 'contain',
+                                 allow_fullscreen: str = 'true', img_captions: str = 'no') -> ET.Element:
+    """
+    Create an api-gallery content item with publish API gallery.
+    
+    New structure: group-section-content-item[content-item-type="api-gallery"]/publish-api-gallery
+    
+    Args:
+        gallery_id: Publish API gallery ID
+        display_type: Gallery display type (side-scroller, carousel, etc.)
+        aspect_ratio: Image aspect ratio
+        img_fit: Image fit mode (contain, cover)
+        allow_fullscreen: Whether to allow fullscreen mode
+        img_captions: Caption display mode (no, yes, etc.)
+        
+    Returns:
+        ET.Element for group-section-content-item with api-gallery type
+    """
+    item = create_section_content_item()
+    
+    # Set content-item-type to api-gallery
+    content_type = item.find('content-item-type')
+    if content_type is not None:
+        content_type.text = 'api-gallery'
+    
+    # Configure publish-api-gallery (sibling to group-single-media)
+    gallery_elem = item.find('publish-api-gallery')
+    if gallery_elem is not None:
+        # Set gallery ID
+        gallery_id_elem = gallery_elem.find('gallery-api-id')
+        if gallery_id_elem is not None:
+            gallery_id_elem.text = gallery_id
+        
+        # Set display properties
+        display_elem = gallery_elem.find('display-type')
+        if display_elem is not None:
+            display_elem.text = display_type
+        
+        ratio_elem = gallery_elem.find('aspect-ratio')
+        if ratio_elem is not None:
+            ratio_elem.text = aspect_ratio
+        
+        fit_elem = gallery_elem.find('img-fit')
+        if fit_elem is not None:
+            fit_elem.text = img_fit
+        
+        fullscreen_elem = gallery_elem.find('allow-fullscreen')
+        if fullscreen_elem is not None:
+            fullscreen_elem.text = allow_fullscreen
+        
+        captions_elem = gallery_elem.find('img-captions')
+        if captions_elem is not None:
+            captions_elem.text = img_captions
     
     return item
 
@@ -1218,15 +1311,17 @@ def map_list_index_to_cards(origin_item: ET.Element, exclusions: List[str], imag
         if heading:
             heading_text_elem.text = heading
         
-        # Heading link - all managed now, no distinction
+        # Heading link - always try to extract path from heading-link element
+        # The heading-link-type determines if the heading is clickable, but the
+        # path may still be present for other uses (like card navigation)
         heading_link_elem = ET.SubElement(card_heading_group, 'heading-link')
         heading_link_type = item.findtext('heading-link-type', 'none')
         
-        if heading_link_type == 'int':
-            # Internal link
-            int_link = item.find('heading-link')
-            if int_link is not None:
-                path = int_link.findtext('path', '/')
+        # Try to get path from heading-link element regardless of type
+        int_link = item.find('heading-link')
+        if int_link is not None:
+            path = int_link.findtext('path', '/')
+            if path and path != '/':
                 ET.SubElement(heading_link_elem, 'path').text = path
             else:
                 ET.SubElement(heading_link_elem, 'path').text = '/'
@@ -1463,6 +1558,424 @@ def map_intro_video(intro_elem: ET.Element, exclusions: List[str]) -> List[ET.El
     return content_items
 
 
+def map_intro_content(intro_elem: ET.Element, exclusions: List[str], images_found: List[str] = None) -> Dict:
+    """
+    Map group-intro content to destination structure.
+    
+    Handles multiple scenarios based on cta-display value:
+    - "Off" with text: prose content item only
+    - "First Single"/"Random Single"/"Shuffled Cycle"/"Cycle" with text+image: text-default section
+    - "video" with text: text-default section with video
+    - "pub-api-gallery": full-width media section with gallery
+    - "pub-api-gallery" + wysiwyg: TWO sections (gallery then prose)
+    - Media only (no text): media content item
+    
+    Args:
+        intro_elem: group-intro element from origin XML
+        exclusions: List to append exclusions/log notes to
+        images_found: List to append image info for tracking
+        
+    Returns:
+        Dict with:
+        - 'section': group-page-section-item element (if single full section needed)
+        - 'sections': List of section elements (if multiple sections, e.g. gallery + text)
+        - 'content_items': List of content items (if just adding to existing section)
+        - 'section_type': 'full' or 'flow' or None
+        - 'has_content': bool indicating if there's content to migrate
+    """
+    from xml_analyzer import parse_wysiwyg_element_to_sections
+    import copy
+    
+    if images_found is None:
+        images_found = []
+    
+    result = {
+        'section': None,
+        'sections': [],  # New: list of sections for multi-section patterns
+        'content_items': [],
+        'section_type': None,
+        'has_content': False
+    }
+    
+    if intro_elem is None:
+        return result
+    
+    # Get cta-display mode
+    cta_display = intro_elem.findtext('cta-display', 'Off')
+    
+    # Check for wysiwyg content
+    wysiwyg_elem = intro_elem.find('wysiwyg')
+    has_text = wysiwyg_elem is not None and (
+        wysiwyg_elem.text or len(list(wysiwyg_elem)) > 0
+    )
+    
+    # Handle pub-api-gallery (special case - full width media section)
+    if cta_display == 'pub-api-gallery':
+        gallery = intro_elem.find('publish-api-gallery')
+        gallery_id = gallery.findtext('gallery-api-id', '') if gallery is not None else ''
+        
+        if gallery_id:
+            # Create full-width media section with gallery
+            gallery_section = create_page_section(section_mode='full')
+            
+            # Set content-section-type to media
+            content_type = gallery_section.find('content-section-type')
+            if content_type is not None:
+                content_type.text = 'media'
+            
+            # Configure media-or-galleries for gallery
+            media_galleries = gallery_section.find('media-or-galleries')
+            if media_galleries is not None:
+                # Set to gallery mode
+                selector = media_galleries.find('media-single-or-gallery')
+                if selector is not None:
+                    selector.text = 'gallery'
+                
+                # Set gallery ID
+                pub_gallery = media_galleries.find('publish-api-gallery')
+                if pub_gallery is not None:
+                    gallery_id_elem = pub_gallery.find('gallery-api-id')
+                    if gallery_id_elem is not None:
+                        gallery_id_elem.text = gallery_id
+            
+            # If there's also text, create SEPARATE section(s) for it
+            # group-page-section-item can only support one content component at a time
+            if has_text:
+                # Parse wysiwyg to detect headings
+                wysiwyg_sections = parse_wysiwyg_element_to_sections(wysiwyg_elem)
+                
+                # Create flow section for text
+                text_section = create_page_section(section_mode='flow')
+                text_content_type = text_section.find('content-section-type')
+                if text_content_type is not None:
+                    text_content_type.text = 'text-default'
+                
+                text_content_items = []
+                
+                # Process each wysiwyg section (split by headings)
+                for ws in wysiwyg_sections:
+                    # Create content item for this section
+                    content_item = create_section_content_item(
+                        heading=ws.get('heading', ''),
+                        heading_level=ws.get('heading_level', 'h2')
+                    )
+                    
+                    # Set content-item-type to prose
+                    item_type = content_item.find('content-item-type')
+                    if item_type is not None:
+                        item_type.text = 'prose'
+                    
+                    # Build wysiwyg content from content_elements
+                    wysiwyg_dest = content_item.find('wysiwyg')
+                    if wysiwyg_dest is not None:
+                        first = True
+                        for elem_type, elem_data in ws.get('content_elements', []):
+                            if elem_type == 'text':
+                                if first and not list(wysiwyg_dest):
+                                    wysiwyg_dest.text = elem_data
+                                    first = False
+                                else:
+                                    if list(wysiwyg_dest):
+                                        if wysiwyg_dest[-1].tail:
+                                            wysiwyg_dest[-1].tail += elem_data
+                                        else:
+                                            wysiwyg_dest[-1].tail = elem_data
+                                    else:
+                                        wysiwyg_dest.text = elem_data
+                            elif elem_type == 'element':
+                                elem_copy = copy.deepcopy(elem_data)
+                                clean_wysiwyg_content(elem_copy, images_found)
+                                wysiwyg_dest.append(elem_copy)
+                                first = False
+                        
+                        # Clean final content
+                        clean_wysiwyg_content(wysiwyg_dest, images_found)
+                    
+                    text_content_items.append(content_item)
+                
+                # Insert content items into text section
+                insert_content_items(text_section, text_content_items)
+                
+                # Return both sections
+                result['sections'] = [gallery_section, text_section]
+                result['section_type'] = 'full'  # Primary type
+                result['has_content'] = True
+                exclusions.append(f"INFO: Intro gallery {gallery_id} migrated to media section + separate text section ({len(text_content_items)} content items)")
+                return result
+            
+            # Gallery only (no text)
+            result['section'] = gallery_section
+            result['section_type'] = 'full'
+            result['has_content'] = True
+            exclusions.append(f"INFO: Intro gallery {gallery_id} migrated to full-width media section")
+            return result
+        else:
+            exclusions.append("Intro pub-api-gallery has no gallery-api-id")
+            return result
+    
+    # Handle video mode
+    if cta_display == 'video':
+        intro_video = intro_elem.find('intro-video')
+        video_source = intro_video.findtext('video-source', '') if intro_video is not None else ''
+        video_id_raw = intro_video.findtext('video-id', '') if intro_video is not None else ''
+        
+        # Extract clean video ID (might be full URL)
+        if video_id_raw:
+            if 'vimeo.com' in video_id_raw or 'youtube.com' in video_id_raw or 'youtu.be' in video_id_raw:
+                video_id, detected_source = extract_video_id(video_id_raw)
+                if detected_source:
+                    video_source = detected_source
+            else:
+                video_id = video_id_raw
+        else:
+            video_id = ''
+        
+        if video_id:
+            if has_text:
+                # Text + video: create text-default section
+                section = create_page_section(section_mode='full')
+                
+                content_type = section.find('content-section-type')
+                if content_type is not None:
+                    content_type.text = 'text-default'
+                
+                # Create content item with text and video
+                content_item = create_section_content_item()
+                
+                # Set content-item-type to prose
+                item_type = content_item.find('content-item-type')
+                if item_type is not None:
+                    item_type.text = 'prose'
+                
+                # Set wysiwyg
+                wysiwyg_dest = content_item.find('wysiwyg')
+                if wysiwyg_dest is not None and wysiwyg_elem is not None:
+                    copy_wysiwyg_content(wysiwyg_elem, wysiwyg_dest, images_found)
+                
+                # Set video in group-single-media
+                all_media = content_item.findall('.//group-single-media')
+                media_group = all_media[-1] if all_media else None
+                if media_group is not None:
+                    media_type_elem = media_group.find('media-type')
+                    if media_type_elem is not None:
+                        media_type_elem.text = video_source or 'vimeo'
+                    
+                    if video_source == 'youtube':
+                        youtube_elem = media_group.find('youtube-id')
+                        if youtube_elem is not None:
+                            youtube_elem.text = video_id
+                    else:
+                        vimeo_elem = media_group.find('vimeo-id')
+                        if vimeo_elem is not None:
+                            vimeo_elem.text = video_id
+                
+                insert_content_items(section, [content_item])
+                result['section'] = section
+                result['section_type'] = 'full'
+                result['has_content'] = True
+                return result
+            else:
+                # Video only: create media content item
+                content_item = create_section_content_item()
+                
+                content_type = content_item.find('content-item-type')
+                if content_type is not None:
+                    content_type.text = 'media'
+                
+                all_media = content_item.findall('.//group-single-media')
+                media_group = all_media[-1] if all_media else None
+                if media_group is not None:
+                    media_type_elem = media_group.find('media-type')
+                    if media_type_elem is not None:
+                        media_type_elem.text = video_source or 'vimeo'
+                    
+                    if video_source == 'youtube':
+                        youtube_elem = media_group.find('youtube-id')
+                        if youtube_elem is not None:
+                            youtube_elem.text = video_id
+                    else:
+                        vimeo_elem = media_group.find('vimeo-id')
+                        if vimeo_elem is not None:
+                            vimeo_elem.text = video_id
+                
+                result['content_items'] = [content_item]
+                result['has_content'] = True
+                return result
+    
+    # Handle image modes: First Single, Random Single, Shuffled Cycle, Cycle
+    image_modes = ['First Single', 'Random Single', 'Shuffled Cycle', 'Cycle']
+    if cta_display in image_modes:
+        # Collect all group-c2a images for logging
+        c2a_images = []
+        for c2a in intro_elem.findall('group-c2a'):
+            image_elem = c2a.find('image')
+            if image_elem is not None:
+                img_path = image_elem.findtext('path', '/')
+                img_name = image_elem.findtext('name', '')
+                if img_path != '/' or img_name:
+                    asset_id = lookup_image_asset_id(img_name) if img_name else None
+                    c2a_images.append({
+                        'name': img_name,
+                        'path': img_path,
+                        'asset_id': asset_id
+                    })
+        
+        # Log all images found
+        if len(c2a_images) > 1:
+            for i, img in enumerate(c2a_images):
+                if img['asset_id']:
+                    images_found.append(f"Intro c2a[{i+1}]: {img['name']} -> {img['asset_id']}")
+                else:
+                    images_found.append(f"Intro c2a[{i+1}]: {img['name']} - NO ASSET ID FOUND")
+            exclusions.append(f"INFO: Intro has {len(c2a_images)} images, only first migrated")
+        elif len(c2a_images) == 1:
+            img = c2a_images[0]
+            if img['asset_id']:
+                images_found.append(f"Intro c2a: {img['name']} -> {img['asset_id']}")
+            else:
+                images_found.append(f"Intro c2a: {img['name']} - NO ASSET ID FOUND")
+        
+        # Use first image for migration
+        first_image = c2a_images[0] if c2a_images else None
+        
+        if has_text:
+            if first_image:
+                # Text + image: create text-default section
+                section = create_page_section(section_mode='full')
+                
+                content_type = section.find('content-section-type')
+                if content_type is not None:
+                    content_type.text = 'text-default'
+                
+                # Create content item with text and image
+                content_item = create_section_content_item()
+                
+                # Set content-item-type to prose
+                item_type = content_item.find('content-item-type')
+                if item_type is not None:
+                    item_type.text = 'prose'
+                
+                # Set wysiwyg
+                wysiwyg_dest = content_item.find('wysiwyg')
+                if wysiwyg_dest is not None and wysiwyg_elem is not None:
+                    copy_wysiwyg_content(wysiwyg_elem, wysiwyg_dest, images_found)
+                
+                # Set image in group-single-media
+                all_media = content_item.findall('.//group-single-media')
+                media_group = all_media[-1] if all_media else None
+                if media_group is not None:
+                    set_group_single_media(
+                        media_group,
+                        asset_id=first_image.get('asset_id', ''),
+                        media_type='img-pub-api'
+                    )
+                
+                insert_content_items(section, [content_item])
+                result['section'] = section
+                result['section_type'] = 'full'
+                result['has_content'] = True
+                return result
+            else:
+                # Text only (no valid image): create prose content item
+                content_item = create_section_content_item()
+                # Set content-item-type to prose
+                item_type = content_item.find('content-item-type')
+                if item_type is not None:
+                    item_type.text = 'prose'
+                wysiwyg_dest = content_item.find('wysiwyg')
+                if wysiwyg_dest is not None and wysiwyg_elem is not None:
+                    copy_wysiwyg_content(wysiwyg_elem, wysiwyg_dest, images_found)
+                
+                result['content_items'] = [content_item]
+                result['has_content'] = True
+                return result
+        else:
+            # Image only (no text)
+            if first_image:
+                content_item = create_section_content_item()
+                
+                content_type = content_item.find('content-item-type')
+                if content_type is not None:
+                    content_type.text = 'media'
+                
+                all_media = content_item.findall('.//group-single-media')
+                media_group = all_media[-1] if all_media else None
+                if media_group is not None:
+                    set_group_single_media(
+                        media_group,
+                        asset_id=first_image.get('asset_id', ''),
+                        media_type='img-pub-api'
+                    )
+                
+                result['content_items'] = [content_item]
+                result['has_content'] = True
+                return result
+    
+    # Handle "Off" mode or fallback - text only
+    if cta_display == 'Off' and has_text:
+        # Text only: create prose content item
+        content_item = create_section_content_item()
+        # Set content-item-type to prose
+        item_type = content_item.find('content-item-type')
+        if item_type is not None:
+            item_type.text = 'prose'
+        wysiwyg_dest = content_item.find('wysiwyg')
+        if wysiwyg_dest is not None and wysiwyg_elem is not None:
+            copy_wysiwyg_content(wysiwyg_elem, wysiwyg_dest, images_found)
+        
+        result['content_items'] = [content_item]
+        result['has_content'] = True
+        return result
+    
+    # modal-video - treat like regular video
+    if cta_display == 'modal-video':
+        intro_video = intro_elem.find('intro-video')
+        video_source = intro_video.findtext('video-source', '') if intro_video is not None else ''
+        video_id = intro_video.findtext('video-id', '') if intro_video is not None else ''
+        
+        if video_id and has_text:
+            section = create_page_section(section_mode='full')
+            
+            content_type = section.find('content-section-type')
+            if content_type is not None:
+                content_type.text = 'text-default'
+            
+            content_item = create_section_content_item()
+            
+            # Set content-item-type to prose
+            item_type = content_item.find('content-item-type')
+            if item_type is not None:
+                item_type.text = 'prose'
+            
+            wysiwyg_dest = content_item.find('wysiwyg')
+            if wysiwyg_dest is not None and wysiwyg_elem is not None:
+                copy_wysiwyg_content(wysiwyg_elem, wysiwyg_dest, images_found)
+            
+            all_media = content_item.findall('.//group-single-media')
+            media_group = all_media[-1] if all_media else None
+            if media_group is not None:
+                media_type_elem = media_group.find('media-type')
+                if media_type_elem is not None:
+                    media_type_elem.text = video_source or 'vimeo'
+                
+                if video_source == 'youtube':
+                    youtube_elem = media_group.find('youtube-id')
+                    if youtube_elem is not None:
+                        youtube_elem.text = video_id
+                else:
+                    vimeo_elem = media_group.find('vimeo-id')
+                    if vimeo_elem is not None:
+                        vimeo_elem.text = video_id
+            
+            insert_content_items(section, [content_item])
+            result['section'] = section
+            result['section_type'] = 'full'
+            result['has_content'] = True
+            return result
+    
+    return result
+
+
 def map_image_content(origin_item: ET.Element, exclusions: List[str], images_found: List[str] = None) -> List[ET.Element]:
     """
     Map Image type content from group-primary/group-secondary.
@@ -1617,12 +2130,15 @@ def map_gallery_content(origin_item: ET.Element, exclusions: List[str]) -> List[
     """
     Map Publish API Gallery type content from group-primary/group-secondary.
     
+    Uses the new api-gallery content item pattern:
+    group-section-content-item[content-item-type="api-gallery"]/publish-api-gallery
+    
     Args:
         origin_item: Origin item with type="Publish API Gallery"
         exclusions: List to append XPath exclusions to
         
     Returns:
-        List with single gallery content item if gallery exists
+        List with single api-gallery content item if gallery exists
     """
     content_items = []
     
@@ -1637,27 +2153,25 @@ def map_gallery_content(origin_item: ET.Element, exclusions: List[str]) -> List[
         exclusions.append("Publish API Gallery (no gallery ID)")
         return content_items
     
-    # Get display properties
-    display_type = gallery.findtext('display-type', 'carousel')
-    img_fit = gallery.findtext('img-fit', 'cover')
+    # Get display properties from source
+    display_type = gallery.findtext('display-type', 'side-scroller')
+    img_fit = gallery.findtext('img-fit', 'contain')
     aspect_ratio = gallery.findtext('aspect-ratio', '1.5')
     allow_fullscreen = gallery.findtext('allow-fullscreen', 'true')
     img_captions = gallery.findtext('img-captions', 'no')
     
-    # Create content item
-    item = create_section_content_item()
+    # Create api-gallery content item using the helper
+    item = create_gallery_content_item(
+        gallery_id=gallery_id,
+        display_type=display_type,
+        aspect_ratio=aspect_ratio,
+        img_fit=img_fit,
+        allow_fullscreen=allow_fullscreen,
+        img_captions=img_captions
+    )
     
-    # Set content type to gallery
-    content_type = item.find('content-item-type')
-    if content_type is not None:
-        content_type.text = 'gallery'
-    
-    # Note: The actual gallery configuration goes in the section's media-or-galleries,
-    # not in the content item. For now, we'll log the gallery ID for manual placement.
-    exclusions.append(f"Gallery ID: {gallery_id} (type: {display_type}, needs manual placement in section media-or-galleries)")
-    
-    # Return empty - galleries need special handling at section level
-    return []
+    content_items.append(item)
+    return content_items
 
 
 def map_button_navigation_group(origin_item: ET.Element, exclusions: List[str]) -> None:

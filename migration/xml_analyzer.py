@@ -41,6 +41,9 @@ def detect_active_regions(xml_root: ET.Element) -> Dict[str, bool]:
     - <value>On</value> (active)
     - Empty/self-closing tag (inactive)
     
+    Special case for intro: also check if group-intro has actual content
+    (wysiwyg text, gallery ID, or video ID) even if settings field is empty.
+    
     Args:
         xml_root: Root of origin XML document
         
@@ -63,6 +66,9 @@ def detect_active_regions(xml_root: ET.Element) -> Dict[str, bool]:
     if group_settings is None:
         return regions
     
+    # Track which regions have explicit settings (vs empty/self-closing tags)
+    explicit_off = set()  # Regions that are explicitly set to off (empty tag but exists)
+    
     # Check each region
     for region in regions.keys():
         region_node = group_settings.find(region)
@@ -71,6 +77,39 @@ def detect_active_regions(xml_root: ET.Element) -> Dict[str, bool]:
             value_node = region_node.find('value')
             if value_node is not None and value_node.text == 'On':
                 regions[region] = True
+            elif value_node is None:
+                # Empty/self-closing tag = explicit off, don't auto-detect
+                explicit_off.add(region)
+    
+    # Special case for intro: check if group-intro has content even if settings empty
+    # BUT only if there's no explicit empty <intro/> tag (which means user turned it off)
+    if not regions['intro'] and 'intro' not in explicit_off:
+        group_intro = search_root.find('.//group-intro')
+        if group_intro is not None:
+            # Check for wysiwyg content
+            wysiwyg = group_intro.find('wysiwyg')
+            has_wysiwyg = wysiwyg is not None and (wysiwyg.text or len(list(wysiwyg)) > 0)
+            
+            # Check for gallery content
+            gallery = group_intro.find('publish-api-gallery')
+            has_gallery = gallery is not None and gallery.findtext('gallery-api-id', '')
+            
+            # Check for video content
+            intro_video = group_intro.find('intro-video')
+            has_video = intro_video is not None and intro_video.findtext('video-id', '')
+            
+            # Check for c2a images with valid path
+            c2a = group_intro.find('group-c2a')
+            c2a_image = c2a.find('image') if c2a is not None else None
+            has_c2a_image = c2a_image is not None and c2a_image.findtext('path', '/') != '/'
+            
+            cta_display = group_intro.findtext('cta-display', 'Off')
+            
+            # Intro is active if it has content to migrate
+            if has_wysiwyg or has_gallery or has_video:
+                regions['intro'] = True
+            elif cta_display in ['First Single', 'Random Single', 'Shuffled Cycle', 'Cycle'] and has_c2a_image:
+                regions['intro'] = True
     
     return regions
 
@@ -132,14 +171,26 @@ def get_item_section_heading(item: ET.Element) -> Optional[Dict]:
     Items with use-section-heading=yes have their heading in <section-heading>
     and heading level in <section-heading-level>.
     
+    Items with use-section-heading=yes-description also have <section-description>
+    which is rich text that should become a prose content item.
+    
     Args:
         item: XML element representing a content item
         
     Returns:
-        Dict with 'text' and 'level' keys, or None if no section heading
+        Dict with:
+        - 'text': heading text
+        - 'level': heading level (h2, h3, etc.)
+        - 'has_description': bool indicating if section-description is present
+        - 'description_elem': the section-description element (if has_description)
+        Or None if no section heading
     """
     use_heading = item.find('.//use-section-heading')
-    if use_heading is None or use_heading.text != 'yes':
+    if use_heading is None:
+        return None
+    
+    use_heading_value = use_heading.text
+    if use_heading_value not in ('yes', 'yes-description'):
         return None
     
     heading_text = item.findtext('.//section-heading', '')
@@ -148,10 +199,21 @@ def get_item_section_heading(item: ET.Element) -> Optional[Dict]:
     if not heading_text:
         return None
     
-    return {
+    result = {
         'text': heading_text,
-        'level': heading_level
+        'level': heading_level,
+        'has_description': False,
+        'description_elem': None
     }
+    
+    # Check for section-description (rich text) when using yes-description
+    if use_heading_value == 'yes-description':
+        section_desc = item.find('.//section-description')
+        if section_desc is not None and (section_desc.text or len(list(section_desc)) > 0):
+            result['has_description'] = True
+            result['description_elem'] = section_desc
+    
+    return result
 
 
 def has_wysiwyg_content(item: ET.Element) -> bool:
