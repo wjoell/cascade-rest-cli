@@ -8,6 +8,72 @@ all other well-formed XHTML content.
 import re
 
 
+def strip_html_extension_from_paths(html_content: str) -> str:
+    """
+    Strip .html extension from root-relative internal paths.
+    
+    Handles paths that weren't caught by the full-URL rewrite:
+    - /ecc/index.html -> /ecc/index
+    - /genetic-counseling/index.html -> /genetic-counseling/index
+    - /news-events/news/2022-04-18-article-name.html -> /news-events/news/2022-04-18-article-name
+    
+    Skips:
+    - External URLs (http://, https://)
+    - PDF links
+    - Anchor-only links (#...)
+    - Already-processed paths without .html
+    
+    Args:
+        html_content: HTML content with potential .html paths
+        
+    Returns:
+        HTML content with .html extensions removed from internal paths
+    """
+    def replace_path(match):
+        prefix = match.group(1)  # href=" or href='
+        path = match.group(2)    # the path
+        quote = prefix[-1]       # the quote character
+        
+        # Skip external URLs
+        if path.startswith('http://') or path.startswith('https://'):
+            return match.group(0)
+        
+        # Skip mailto and tel links
+        if path.startswith('mailto:') or path.startswith('tel:'):
+            return match.group(0)
+        
+        # Skip PDF links
+        if '.pdf' in path.lower():
+            return match.group(0)
+        
+        # Skip anchor-only links
+        if path.startswith('#'):
+            return match.group(0)
+        
+        # Remove -migration.html if present
+        if '-migration.html' in path:
+            path = path.replace('-migration.html', '')
+        # Remove .html extension (preserve any hash fragment)
+        elif '.html' in path:
+            # Split on .html to handle .html#anchor cases
+            parts = path.split('.html', 1)
+            path = parts[0]
+            # If there was a hash fragment after .html, preserve it
+            if len(parts) > 1 and parts[1].startswith('#'):
+                path += parts[1]
+        
+        return f'{prefix}{path}{quote}'
+    
+    # Pattern to match href attributes with paths
+    # Captures: href="/path/to/page.html" or href='/path/to/page.html'
+    path_pattern = re.compile(
+        r'(href=[\'"])([^\'"]*)([\'"])',
+        re.IGNORECASE
+    )
+    
+    return path_pattern.sub(replace_path, html_content)
+
+
 def rewrite_internal_links(html_content: str) -> str:
     """
     Rewrite internal sarahlawrence.edu URLs to CMS-managed paths.
@@ -90,6 +156,11 @@ def rewrite_internal_links(html_content: str) -> str:
             print(f"     - {pdf_link}")
         if len(pdf_links_found) > 5:
             print(f"     ... and {len(pdf_links_found) - 5} more")
+    
+    # Also handle root-relative paths with .html extension (not full URLs)
+    # e.g., /ecc/index.html -> /ecc/index
+    # But skip external URLs, PDFs, and anchors-only links
+    result = strip_html_extension_from_paths(result)
     
     return result
 
