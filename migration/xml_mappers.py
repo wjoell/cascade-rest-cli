@@ -2253,7 +2253,14 @@ def create_page_section(section_mode: str = "flow", content_heading: str = None)
     ET.SubElement(section, 'eyebrow')
     heading_elem = ET.SubElement(section, 'content-heading')
     if content_heading:
-        heading_elem.text = content_heading
+        try:
+            # Parse as HTML fragment to preserve inline elements like <em>
+            temp = ET.fromstring(f'<temp>{content_heading}</temp>')
+            heading_elem.text = temp.text
+            for child in temp:
+                heading_elem.append(child)
+        except ET.ParseError:
+            heading_elem.text = content_heading
     ET.SubElement(section, 'section-intro')
     ET.SubElement(section, 'interest-search-menu-label').text = "I'm interested in..."
     ET.SubElement(section, 'bool-section-heading-cta').text = 'false'

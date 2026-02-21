@@ -193,7 +193,20 @@ def get_item_section_heading(item: ET.Element) -> Optional[Dict]:
     if use_heading_value not in ('yes', 'yes-description'):
         return None
     
-    heading_text = item.findtext('.//section-heading', '')
+    # Get inner HTML to preserve inline elements like <em>, <sup>, etc.
+    heading_elem = item.find('.//section-heading')
+    if heading_elem is not None:
+        parts = []
+        if heading_elem.text:
+            parts.append(heading_elem.text)
+        for child in heading_elem:
+            parts.append(ET.tostring(child, encoding='unicode'))
+            if child.tail:
+                parts.append(child.tail)
+        heading_text = ''.join(parts).strip()
+    else:
+        heading_text = ''
+    
     heading_level = item.findtext('.//section-heading-level', 'h2')
     
     if not heading_text:
