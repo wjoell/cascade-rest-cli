@@ -17,6 +17,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+from html import escape as html_escape
 from xml.etree import ElementTree as ET
 
 # Add parent directory to path for imports
@@ -141,7 +142,9 @@ def extract_page_metadata(origin_xml_path: str) -> Dict[str, Any]:
         display_name: str
         description: str
         keywords: str
-        heading: str (resolved from custom heading / page-heading / title)
+        heading: str (resolved from custom heading / page-heading / headline / title)
+        start_date: str (timestamp for news items)
+        is_featured_story: bool (True if filename ends with -fs.xml)
         dynamic_metadata: dict of field_name -> list of values
     """
     tree = ET.parse(origin_xml_path)
@@ -156,6 +159,8 @@ def extract_page_metadata(origin_xml_path: str) -> Dict[str, Any]:
         'description': '',
         'keywords': '',
         'heading': '',
+        'start_date': '',
+        'is_featured_story': False,
         'dynamic_metadata': {},
     }
 
@@ -167,33 +172,58 @@ def extract_page_metadata(origin_xml_path: str) -> Dict[str, Any]:
     result['display_name'] = page.findtext('display-name', '') or ''
     result['description'] = page.findtext('description', '') or ''
     result['keywords'] = page.findtext('keywords', '') or ''
+    result['start_date'] = page.findtext('start-date', '') or ''
+    
+    # Check if this is a featured story (filename ends with -fs.xml)
+    if origin_xml_path.endswith('-fs.xml'):
+        result['is_featured_story'] = True
 
     # Resolve page heading (priority order):
     # 1. system-data-structure/group-settings[page-heading="Custom"]/custom-page-heading
     # 2. dynamic-metadata[name="page-heading" and value!=""]/value
-    # 3. title
+    # 3. dynamic-metadata[name="headline" and value!=""]/value (news items)
+    # 4. title
     heading = ''
+    headline_value = ''  # Track headline for news items
 
     if sds is not None:
         gs = sds.find('group-settings')
         if gs is not None:
             ph_setting = gs.findtext('page-heading', '')
             if ph_setting == 'Custom':
-                custom_heading = gs.findtext('custom-page-heading', '')
-                if custom_heading:
-                    heading = custom_heading
+                cph_elem = gs.find('custom-page-heading')
+                if cph_elem is not None:
+                    # Get inner HTML to preserve inline elements like <sup>, <em>
+                    # HTML-escape text portions (hero heading is an HTML field)
+                    parts = []
+                    if cph_elem.text:
+                        parts.append(html_escape(cph_elem.text, quote=False))
+                    for child in cph_elem:
+                        parts.append(ET.tostring(child, encoding='unicode'))
+                        if child.tail:
+                            parts.append(html_escape(child.tail, quote=False))
+                    custom_heading = ''.join(parts).strip()
+                    if custom_heading:
+                        heading = custom_heading
 
     if not heading:
-        # Check dynamic-metadata page-heading
+        # Check dynamic-metadata page-heading and headline
         for dm in page.findall('dynamic-metadata'):
-            if dm.findtext('name', '') == 'page-heading':
+            name = dm.findtext('name', '')
+            if name == 'page-heading':
                 dm_heading = dm.findtext('value', '')
                 if dm_heading:
-                    heading = dm_heading
+                    heading = html_escape(dm_heading, quote=False)
                     break
-
+            elif name == 'headline':
+                headline_value = dm.findtext('value', '')
+    
+    # Fallback to headline for news items (if page-heading wasn't set)
+    if not heading and headline_value:
+        heading = html_escape(headline_value, quote=False)
+    
     if not heading:
-        heading = result['title']
+        heading = html_escape(result['title'], quote=False)
 
     result['heading'] = heading
 
@@ -275,6 +305,18 @@ def find_hero_heading_node(structured_data_nodes: List[Dict]) -> Optional[Dict]:
     return None
 
 
+def find_page_type_node(structured_data_nodes: List[Dict]) -> Optional[Dict]:
+    """
+    Find the page-type text node in structuredDataNodes.
+
+    Returns the page-type text node or None.
+    """
+    for node in structured_data_nodes:
+        if node.get('identifier') == 'page-type':
+            return node
+    return None
+
+
 def update_single_page_metadata(cms_path: str, auth: Dict, page_id: str,
                                 origin_xml_path: str, logger: MetadataUpdateLogger,
                                 dry_run: bool = False) -> bool:
@@ -331,6 +373,22 @@ def update_single_page_metadata(cms_path: str, auth: Dict, page_id: str,
         if current_heading != origin_meta['heading']:
             changes['hero-heading'] = {'from': current_heading, 'to': origin_meta['heading']}
             heading_node['text'] = origin_meta['heading']
+    
+    # --- Page type (for featured stories) ---
+    if origin_meta['is_featured_story']:
+        page_type_node = find_page_type_node(sd_nodes)
+        if page_type_node:
+            current_page_type = page_type_node.get('text', '')
+            if current_page_type != 'featured-story':
+                changes['page-type'] = {'from': current_page_type, 'to': 'featured-story'}
+                page_type_node['text'] = 'featured-story'
+    
+    # --- Start date (for news items) ---
+    if origin_meta['start_date']:
+        current_start = page.get('startDate', '')
+        if current_start != origin_meta['start_date']:
+            changes['startDate'] = {'from': current_start, 'to': origin_meta['start_date']}
+            page['startDate'] = origin_meta['start_date']
 
     # --- Dynamic metadata ---
     for field_name, new_values in origin_meta['dynamic_metadata'].items():
@@ -393,7 +451,7 @@ def get_pages_from_db(section_path: str = None) -> List[Dict]:
 
 
 def update_metadata(section_path: str = None, dry_run: bool = False,
-                    resume_after: str = None):
+                    resume_after: str = None, pages_from: str = None):
     """
     Update page metadata via REST API from origin XML files.
 
@@ -401,6 +459,7 @@ def update_metadata(section_path: str = None, dry_run: bool = False,
         section_path: Optional section prefix. If None, processes all pages.
         dry_run: Preview changes without updating.
         resume_after: Source path to resume after.
+        pages_from: Path to text file with source paths to process (one per line).
     """
     scope = section_path or 'all'
     timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
@@ -412,6 +471,8 @@ def update_metadata(section_path: str = None, dry_run: bool = False,
     print(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
     if resume_after:
         print(f"Resuming after: {resume_after}")
+    if pages_from:
+        print(f"Pages from: {pages_from}")
     print()
 
     # Get auth
@@ -420,6 +481,14 @@ def update_metadata(section_path: str = None, dry_run: bool = False,
 
     # Get pages
     pages = get_pages_from_db(section_path)
+
+    # Filter to specific pages if --pages-from provided
+    if pages_from:
+        with open(pages_from, 'r') as f:
+            allowed_paths = {line.strip() for line in f if line.strip()}
+        pages = [p for p in pages if p['source_path'] in allowed_paths]
+        print(f"📄 Filtered to {len(pages)} pages from {len(allowed_paths)} paths in file")
+    
     total_pages = len(pages)
     print(f"📄 Found {total_pages} pages")
     print(f"📋 Log file: {log_path}")
@@ -566,11 +635,16 @@ if __name__ == '__main__':
     parser.add_argument('--page', type=str, help='Update single page by source path')
     parser.add_argument('--resume-after', type=str,
                         help='Source path to resume after (skip pages up to this path)')
+    parser.add_argument('--pages-from', type=str,
+                        help='Path to text file with source paths to process (one per line)')
 
     args = parser.parse_args()
 
     if args.page:
         update_single_by_path(args.page, dry_run=args.dry_run)
+    elif args.pages_from:
+        update_metadata(section_path=None, dry_run=args.dry_run,
+                        resume_after=args.resume_after, pages_from=args.pages_from)
     elif args.all:
         update_metadata(section_path=None, dry_run=args.dry_run,
                         resume_after=args.resume_after)
