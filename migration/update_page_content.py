@@ -91,7 +91,7 @@ def get_auth():
 HTML_CONTENT_FIELDS = {
     'wysiwyg', 'source-content', 'migration-summary', 'section-intro',
     'caption', 'layered-image-caption', 'content-heading-cutline',
-    'heading-text'
+    'heading-text', 'content-heading'
 }
 
 
@@ -529,7 +529,8 @@ def get_pages_from_db(section_path: str = None) -> List[Dict]:
 
 
 def update_pages(section_path: str = None, dry_run: bool = False,
-                 rate_limit: float = 0, resume_after: str = None):
+                 rate_limit: float = 0, resume_after: str = None,
+                 pages_from: str = None):
     """
     Update pages via REST API from destination XML files.
     
@@ -538,6 +539,7 @@ def update_pages(section_path: str = None, dry_run: bool = False,
         dry_run: Preview changes without updating.
         rate_limit: Seconds to wait between API calls (default 0.1s).
         resume_after: Source path to resume after (skip pages up to and including this path).
+        pages_from: Path to a text file containing source paths to process (one per line).
     """
     import time
     
@@ -560,9 +562,19 @@ def update_pages(section_path: str = None, dry_run: bool = False,
     print(f"✅ Connected to {cms_path}")
     
     # Get pages
-    pages = get_pages_from_db(section_path)
+    if pages_from:
+        # Load specific source paths from file
+        with open(pages_from) as f:
+            filter_paths = set(line.strip() for line in f if line.strip())
+        all_pages = get_pages_from_db(section_path)
+        pages = [p for p in all_pages if p['source_path'] in filter_paths
+                 or p['source_path'].replace('.xml', '') in filter_paths]
+        print(f"📄 Found {len(pages)} pages (filtered from {len(all_pages)} via {pages_from})")
+    else:
+        pages = get_pages_from_db(section_path)
     total_pages = len(pages)
-    print(f"📄 Found {total_pages} pages")
+    if not pages_from:
+        print(f"📄 Found {total_pages} pages")
     print(f"📋 Log file: {log_path}")
     print()
     
@@ -709,11 +721,17 @@ if __name__ == '__main__':
                         help='Seconds between API calls (default: 0, auth provides natural throttling)')
     parser.add_argument('--resume-after', type=str,
                         help='Source path to resume after (skip pages up to this path)')
+    parser.add_argument('--pages-from', type=str,
+                        help='Path to text file with source paths to process (one per line)')
     
     args = parser.parse_args()
     
     if args.page:
         update_single_by_path(args.page, dry_run=args.dry_run)
+    elif args.pages_from:
+        update_pages(section_path=None, dry_run=args.dry_run,
+                     rate_limit=args.rate_limit, resume_after=args.resume_after,
+                     pages_from=args.pages_from)
     elif args.all:
         update_pages(section_path=None, dry_run=args.dry_run,
                      rate_limit=args.rate_limit, resume_after=args.resume_after)
